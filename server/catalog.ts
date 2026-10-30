@@ -1,0 +1,38 @@
+export const catalog = [
+  {
+    id: 'linen',
+    name: 'Áo vải mộc',
+    subtitle: 'Giản dị từ những điều nhỏ nhất',
+    price: 0,
+    color: '#a9b5a0',
+    accent: '#d6dac4',
+    collection: 'Khởi đầu',
+  },
+  {
+    id: 'saffron',
+    name: 'Nắng ban mai',
+    subtitle: 'Một chút ấm áp, một ngày an yên',
+    price: 180,
+    color: '#db9c48',
+    accent: '#f7d58a',
+    collection: 'An nhiên',
+  },
+  {
+    id: 'lotus',
+    name: 'Sen hồng',
+    subtitle: 'Nhẹ nhàng như một đóa sen',
+    price: 250,
+    color: '#c78e99',
+    accent: '#efc9cc',
+    collection: 'An nhiên',
+  },
+  {
+    id: 'cloud',
+    name: 'Mây thanh',
+    subtitle: 'Mang theo một khoảng trời trong',
+    price: 420,
+    color: '#7c9fba',
+    accent: '#c1dce6',
+    collection: 'Tĩnh lặng',
+  },
+];

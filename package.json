@@ -1,0 +1,58 @@
+{
+  "name": "tu-hanh-online",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.13 <25"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --import tsx server/index.ts",
+    "build": "tsc --noEmit && vite build",
+    "start": "NODE_ENV=production node --env-file-if-exists=.env --import tsx server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters && prettier --check src server tests scripts docs README.md index.html package.json tsconfig.json vite.config.ts pnpm-workspace.yaml compose.yaml .prettierrc.json",
+    "test": "node --env-file-if-exists=.env --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test:browser": "node --env-file-if-exists=.env --import tsx tests/browser.ts",
+    "setup:local": "node --import tsx scripts/init-local.ts",
+    "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
+    "db:import-legacy": "node --env-file-if-exists=.env --import tsx scripts/import-legacy.ts",
+    "admin:promote": "node --env-file-if-exists=.env --import tsx scripts/promote-admin.ts",
+    "worker": "node --env-file-if-exists=.env --import tsx server/worker.ts",
+    "format": "prettier --write src server tests scripts docs README.md index.html package.json tsconfig.json vite.config.ts pnpm-workspace.yaml compose.yaml .prettierrc.json"
+  },
+  "dependencies": {
+    "@fontsource/be-vietnam-pro": "5.2.8",
+    "@fontsource/lora": "5.2.8",
+    "argon2": "^0.44.0",
+    "bullmq": "^6.5.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "ioredis": "^6.0.0",
+    "lucide-react": "^0.468.0",
+    "nodemailer": "^10.3.1",
+    "otpauth": "^9.5.2",
+    "pg": "^8.23.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.0",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "prettier": "3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
+}

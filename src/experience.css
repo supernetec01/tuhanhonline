@@ -1,0 +1,194 @@
+.ceremony-overlay {
+  position: absolute;
+  top: 10%;
+  left: 10%;
+  right: 15%;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px;
+  background: #f2e6c9e8;
+  border: 1px solid #d2b779;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #806938;
+  pointer-events: none;
+}
+.visual-effect {
+  position: absolute;
+  inset: 35% 12% 8%;
+  z-index: 99;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-direction: column;
+}
+.effect-art {
+  color: #ffe4a0;
+  filter: drop-shadow(0 0 20px #ffcf78);
+  animation: effect-breathe 2s ease-in-out infinite;
+}
+.effect-thanks {
+  margin-top: 8px;
+  font-size: 12px;
+  padding: 8px 15px;
+  background: #4d422fdb;
+  color: #f5e4b6;
+  border-radius: 25px;
+}
+.effect-lantern {
+  display: inline-block;
+  width: 35px;
+  height: 57px;
+  border: 3px solid #e9c373;
+  border-radius: 35%;
+  background: linear-gradient(90deg, #be7546, #e5b876, #b7794a);
+  box-shadow: 0 0 35px #f6cf87;
+  margin: 10px 45px;
+  position: relative;
+}
+.effect-lantern:after {
+  content: '';
+  position: absolute;
+  height: 20px;
+  width: 3px;
+  background: #e3bf7a;
+  bottom: -22px;
+  left: 14px;
+}
+.effect-incense .effect-art {
+  display: flex;
+  gap: 13px;
+  height: 100px;
+}
+.effect-incense i {
+  display: block;
+  width: 8px;
+  height: 90px;
+  border-radius: 50%;
+  background: linear-gradient(transparent, #fff0c2aa, transparent);
+  transform: rotate(12deg);
+  animation: smoke-rise 3s ease-in-out infinite;
+}
+.effect-incense i:nth-child(2) {
+  animation-delay: -1s;
+}
+.effect-incense i:nth-child(3) {
+  animation-delay: -2s;
+}
+.broadcast-canvas .ceremony-overlay {
+  top: 5%;
+  font-size: 10px;
+  left: 8%;
+  right: 18%;
+}
+.broadcast-caption {
+  padding-right: 17%;
+  padding-bottom: 12%;
+}
+.broadcast-count {
+  padding-bottom: 6%;
+  padding-right: 15%;
+}
+.broadcast-title {
+  padding-right: 17%;
+}
+.broadcast-controls input[type='file'] {
+  width: 100%;
+  font-size: 10px;
+  margin: 12px 0;
+}
+.scene .you-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.live-editor {
+  padding: 20px 0;
+  border-top: 1px solid #e0e3d4;
+}
+.effect-rule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 15px 0;
+}
+.effect-rule input:not([type='checkbox']),
+.effect-rule select {
+  width: 130px !important;
+  margin: 0 !important;
+}
+.scene:has(.ceremony-overlay) {
+  box-shadow: inset 0 0 90px #e8c57540;
+}
+.live-analytics {
+  font-size: 12px;
+  line-height: 2;
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.your-seat .you-label {
+  max-width: 150px;
+}
+@keyframes effect-breathe {
+  50% {
+    transform: translateY(-6px);
+    opacity: 0.7;
+  }
+}
+@keyframes smoke-rise {
+  50% {
+    transform: translateY(-35px) rotate(-12deg);
+    opacity: 0.3;
+  }
+}
+@media (max-width: 540px) {
+  .ceremony-overlay {
+    font-size: 8px;
+    padding: 7px;
+    gap: 5px;
+  }
+  .effect-thanks {
+    font-size: 9px;
+  }
+  .effect-art svg {
+    width: 55px;
+  }
+  .effect-lantern {
+    margin: 10px 25px;
+    width: 25px;
+    height: 40px;
+  }
+  .scene .you-label {
+    font-size: 5px;
+    padding: 2px 4px;
+    max-width: 70px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .effect-art,
+  .effect-incense i {
+    animation: none;
+  }
+}
+
+@keyframes incense {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  15%,
+  85% {
+    transform: translate(var(--walk-x), 0) scale(0.95);
+  }
+  35%,
+  65% {
+    transform: translate(var(--walk-x), var(--walk-y)) scale(0.75);
+  }
+}
