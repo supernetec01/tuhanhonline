@@ -30,6 +30,9 @@ export type Outfit = {
 export type User = {
   id: string;
   name: string;
+  username: string;
+  dharmaName: string;
+  hasRecoveryEmail: boolean;
   role: 'USER' | 'ADMIN' | 'OPERATOR';
   verified: boolean;
   coins: number;

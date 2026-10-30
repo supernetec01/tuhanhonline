@@ -1,3 +1,5 @@
+> **Cập nhật:** Hợp đồng đăng ký/đăng nhập username, email tùy chọn, proof-of-work và chọn ghế nằm ở [SINGLE_GAME.md](SINGLE_GAME.md). Chơi game/Admin không bị chặn bởi xác minh email.
+
 # API thực thi hiện tại
 
 Cùng origin, prefix `/api`; JSON, `Cache-Control: no-store`, `X-Request-Id`. POST của trình duyệt cần `Origin=APP_ORIGIN`, `X-Temple-Request: 1`, `Content-Type: application/json`. Token phiên chỉ ở cookie HttpOnly. Lỗi `{code,error}`; 400 dữ liệu sai, 401 phiên/mật khẩu/chữ ký sai, 403 quyền/xác minh/MFA, 409 xung đột, 429 cooldown/rate limit, 503 dịch vụ chưa sẵn sàng.
@@ -5,8 +7,8 @@ Cùng origin, prefix `/api`; JSON, `Cache-Control: no-store`, `X-Request-Id`. PO
 | API                                                           | Ý nghĩa                                                                          |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------ |
 | GET `/health/live`, `/health/ready`                           | Live; readiness kiểm tra DB/Redis/worker                                         |
-| POST `/auth/register`                                         | `{email,password,name}`; 201, `{user,verificationSent}`                          |
-| POST `/auth/login`                                            | `{email,password}`; xoay phiên cũ của trình duyệt                                |
+| POST `/auth/register`                                         | `{username,dharmaName,password,email?,challenge}`; 201, `{user}`                 |
+| POST `/auth/login`                                            | `{username,password}` (hỗ trợ email cũ); xoay phiên cũ của trình duyệt           |
 | POST `/auth/logout`                                           | `{}`; thu hồi phiên hiện tại và rời phòng                                        |
 | GET `/me`                                                     | `{user:null}` hoặc `{id,name,role,verified,coins,equipped,accessory,inventory}`  |
 | POST `/auth/resend-verification`                              | `{}`; cần đăng nhập                                                              |
@@ -18,7 +20,7 @@ Cùng origin, prefix `/api`; JSON, `Cache-Control: no-store`, `X-Request-Id`. PO
 | POST `/wardrobe/equip`                                        | `{outfitId,accessory:'none'                                                      | 'beads'                                                  | 'lotus'}`; cần sở hữu áo |
 | GET `/room`                                                   | Snapshot công khai: config/version/counts/36 ghế và nhân vật; không email/mã băm |
 | GET `/room/me`, `/waitlist/me`                                | Trạng thái chỗ/hàng chờ của mình; `/room/me` có nghi lễ hiện tại                 |
-| POST `/room/join`                                             | `{requestKey:UUID}`; cần email xác minh, ACTIVE hoặc WAITING                     |
+| POST `/room/join`                                             | `{requestKey:UUID}`; không cần email xác minh, ACTIVE hoặc WAITING               |
 | POST `/room/leave`, `/waitlist/cancel`                        | `{}`; rời và mời người chờ tiếp                                                  |
 | POST `/waitlist/accept`                                       | `{}`; chấp nhận INVITED chưa hết hạn                                             |
 | POST `/room/heartbeat`                                        | `{}`; gia hạn disconnect deadline, không hồi sinh ghế hết hạn                    |

@@ -9,3 +9,5 @@
 7. SVG/chibi tự tạo, không chép ảnh báo chí/TikTok/audio có bản quyền. Chưa có kinh hợp lệ nên không phát âm thanh giả. Worker/API/state đã chạy thật, đồ họa vẫn SVG/CSS thay vì sprite atlas/Phaser; xem PLAN.md cho hướng nâng cấp.
 8. Dữ liệu PostgreSQL/Redis đã được chuyển từ named volume sang `.data` bind mount để giữ cùng workspace; volume nguồn không xóa. SQLite cũ giữ nguyên, tài khoản/tủ áo nhập một lần có guard DB đích trống. Không ghi đè người dùng hoặc tự merge khi refresh setup.
 9. Không commit/push/public website trong đợt kiểm tra này. Scripts install/start được lưu riêng vào draft môi trường; publication và xác nhận ở một task mới là các bước khác, chưa được chứng minh chỉ bằng lần chạy hiện tại.
+
+10. Theo yêu cầu mới: Single Game Screen Phaser, username duy nhất + pháp danh, email tùy chọn và không chặn ghế theo xác minh. Giữ lại account cũ/MFA/FIFO; migration 003 bổ sung username, auth có PoW/honeypot. Xem SINGLE_GAME.md; quyết định này thay phần mô tả renderer/email của các đợt trước.

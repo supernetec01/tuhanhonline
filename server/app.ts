@@ -9,7 +9,15 @@ import argon2 from 'argon2';
 import { z } from 'zod';
 import { type Pool } from 'pg';
 import { ApiError, connectDb, migrate, transaction, roomLock, changed, type Row } from './db.js';
-import { AuthService, digest, credentials, registration, hashOptions } from './auth.js';
+import {
+  AuthService,
+  digest,
+  credentials,
+  registration,
+  hashOptions,
+  emailSchema,
+  passwordSchema,
+} from './auth.js';
 import { RoomService } from './room.js';
 import { CmsService } from './cms.js';
 import { LiveService, MockLiveAdapter, ApprovedWebhookAdapter, liveEventSchema } from './live.js';
@@ -31,12 +39,14 @@ export async function createApp(
   const origin = options.origin ?? process.env.APP_ORIGIN ?? 'http://localhost:3000';
   if (production && !origin.startsWith('https://'))
     throw new Error('Production requires an HTTPS APP_ORIGIN');
-  if (production && process.env.MAIL_MODE !== 'smtp')
-    throw new Error('Production requires SMTP email delivery');
+
   const pool = options.pool ?? connectDb();
   const redis =
     options.redis ??
-    new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', { maxRetriesPerRequest: 1 });
+    new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', {
+      maxRetriesPerRequest: 1,
+      keyPrefix: process.env.REDIS_KEY_PREFIX ?? '',
+    });
   redis.on('error', () => {});
   if (options.migrate !== false) await migrate(pool);
   const auth = new AuthService(pool, redis, origin, production, await AuthService.key());
@@ -60,7 +70,7 @@ export async function createApp(
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'", ...(!production ? ["'unsafe-inline'"] : [])],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", 'data:'],
+          imgSrc: ["'self'", 'data:', 'blob:'],
           mediaSrc: ["'self'", 'blob:'],
           fontSrc: ["'self'"],
           connectSrc: ["'self'", ...(!production ? [origin.replace(/^http/, 'ws')] : [])],
@@ -128,9 +138,30 @@ export async function createApp(
       type === 'register' ? 5 : 12,
       type === 'register' ? 3600 : 900,
     );
+  app.get('/api/auth/challenge', async (req, res) => {
+    await auth.limit(`challenge:${digest(req.ip ?? 'unknown')}`, 20, 60);
+    const id = randomUUID(),
+      nonce = randomBytes(24).toString('hex');
+    await redis.set(
+      `signup:${id}`,
+      JSON.stringify({ nonce, ip: digest(req.ip ?? 'unknown') }),
+      'EX',
+      300,
+    );
+    res.json({ id, nonce, difficulty: 3 });
+  });
   app.post('/api/auth/register', async (req, res) => {
     await authRate(req, 'register');
     const input = registration.parse(req.body);
+    const proof = await redis.getdel(`signup:${input.challenge.id}`);
+    if (!proof)
+      throw new ApiError(400, 'BOT_CHECK_FAILED', 'Thử thách đã hết hạn. Vui lòng thử lại.');
+    const challenge = JSON.parse(proof);
+    if (
+      challenge.ip !== digest(req.ip ?? 'unknown') ||
+      !digest(`${challenge.nonce}:${input.challenge.solution}`).startsWith('000')
+    )
+      throw new ApiError(400, 'BOT_CHECK_FAILED', 'Kiểm tra chống đăng ký tự động chưa hợp lệ.');
     const passwordHash = await argon2.hash(input.password, hashOptions),
       id = randomUUID();
     let u: Row;
@@ -138,8 +169,8 @@ export async function createApp(
       u = await transaction(pool, async (tx) => {
         const result = (
           await tx.query(
-            'INSERT INTO users(id,email,password_hash,name) VALUES($1,$2,$3,$4) RETURNING *',
-            [id, input.email, passwordHash, input.name],
+            'INSERT INTO users(id,email,password_hash,name,username) VALUES($1,$2,$3,$4,$5) RETURNING *',
+            [id, input.email || null, passwordHash, input.dharmaName, input.username],
           )
         ).rows[0];
         await tx.query('INSERT INTO inventory VALUES($1,$2)', [id, 'linen']);
@@ -154,24 +185,21 @@ export async function createApp(
         );
       throw e;
     }
-    // Failed delivery keeps the account recoverable through resend-verification instead of creating duplicate accounts.
-    try {
-      await auth.mailToken(u, 'verify');
-    } catch {
-      res.locals.mailFailed = true;
-    }
     await auth.session(id, res, req);
-    res.status(201).json({ user: await auth.account(u), verificationSent: !res.locals.mailFailed });
+    res.status(201).json({ user: await auth.account(u) });
   });
   app.post('/api/auth/login', async (req, res) => {
     await authRate(req, 'login');
     const input = credentials.parse(req.body);
-    await auth.limit(`login:account:${digest(input.email)}`, 8, 900);
-    const u = (await pool.query('SELECT * FROM users WHERE email=$1', [input.email])).rows[0];
+    const u = (
+      await pool.query('SELECT * FROM users WHERE username=$1 OR email=$1', [input.identifier])
+    ).rows[0];
+    const accountKey = digest(u?.id ?? input.identifier);
+    await auth.limit(`login:account:${accountKey}`, 8, 900);
     const valid = await argon2.verify(u?.password_hash ?? dummyHash, input.password);
     if (!u || !valid || u.banned)
-      throw new ApiError(401, 'INVALID_CREDENTIALS', 'Email hoặc mật khẩu không đúng.');
-    await redis.del(`limit:login:account:${digest(input.email)}`);
+      throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu không đúng.');
+    await redis.del(`limit:login:account:${accountKey}`);
     await auth.session(u.id, res, req, u.password_hash);
     res.json({ user: await auth.account(u) });
   });
@@ -183,6 +211,8 @@ export async function createApp(
   });
   app.post('/api/auth/resend-verification', auth.requireUser, async (_req, res) => {
     await auth.limit(`verify:${user(res).id}`, 3, 900);
+    if (!user(res).email)
+      throw new ApiError(400, 'EMAIL_MISSING', 'Tài khoản chưa có email khôi phục.');
     if (!user(res).verified_at) await auth.mailToken(user(res), 'verify');
     res.json({ ok: true });
   });
@@ -205,7 +235,16 @@ export async function createApp(
   });
   app.post('/api/auth/forgot-password', async (req, res) => {
     await authRate(req, 'recovery');
-    const { email } = z.object({ email: credentials.shape.email }).parse(req.body);
+    if (
+      production &&
+      (process.env.MAIL_MODE !== 'smtp' || !process.env.SMTP_URL || !process.env.MAIL_FROM)
+    )
+      throw new ApiError(
+        503,
+        'RECOVERY_UNAVAILABLE',
+        'Email khôi phục chưa được cấu hình trên hệ thống này.',
+      );
+    const { email } = z.object({ email: emailSchema }).parse(req.body);
     await auth.limit(`recovery:${digest(email)}`, 3, 900);
     const u = (await pool.query('SELECT * FROM users WHERE email=$1 AND NOT banned', [email]))
       .rows[0];
@@ -221,7 +260,7 @@ export async function createApp(
   app.post('/api/auth/reset-password', async (req, res) => {
     await authRate(req, 'recovery');
     const { token, password } = z
-      .object({ token: z.string().regex(/^[a-f0-9]{64}$/), password: credentials.shape.password })
+      .object({ token: z.string().regex(/^[a-f0-9]{64}$/), password: passwordSchema })
       .strict()
       .parse(req.body);
     const hash = await argon2.hash(password, hashOptions);
@@ -319,18 +358,22 @@ export async function createApp(
     });
   });
   app.get('/api/room', async (_req, res) => res.json(await room.snapshot()));
-  app.get('/api/room/me', auth.requireUser, async (_req, res) =>
+  app.get('/api/room/me', async (req, res) => {
+    const current = await auth.currentUser(req);
     res.json({
-      entry: await room.myEntry(user(res).id),
-      action: await room.myAction(user(res).id),
-    }),
-  );
+      entry: current ? await room.myEntry(current.id) : null,
+      action: current ? await room.myAction(current.id) : null,
+    });
+  });
   app.get('/api/waitlist/me', auth.requireUser, async (_req, res) =>
     res.json({ entry: await room.myEntry(user(res).id) }),
   );
-  app.post('/api/room/join', auth.requireUser, auth.verified, async (req, res) =>
-    res.json({ entry: await room.join(user(res).id, command.parse(req.body).requestKey) }),
-  );
+  app.post('/api/room/join', auth.requireUser, async (req, res) => {
+    const input = command
+      .extend({ seatId: z.number().int().min(1).max(36).optional() })
+      .parse(req.body);
+    res.json({ entry: await room.join(user(res).id, input.requestKey, input.seatId) });
+  });
   app.post('/api/room/leave', auth.requireUser, async (_req, res) => {
     await room.leave(user(res).id);
     res.json({ ok: true });
@@ -339,7 +382,7 @@ export async function createApp(
     await room.heartbeat(user(res).id);
     res.json({ ok: true });
   });
-  app.post('/api/waitlist/accept', auth.requireUser, auth.verified, async (_req, res) => {
+  app.post('/api/waitlist/accept', auth.requireUser, async (_req, res) => {
     const entry = await room.accept(user(res).id);
     if (!entry)
       throw new ApiError(
@@ -354,7 +397,7 @@ export async function createApp(
     res.json({ ok: true });
   });
   for (const type of ['bow', 'prostrate', 'incense'])
-    app.post(`/api/actions/${type}`, auth.requireUser, auth.verified, async (req, res) =>
+    app.post(`/api/actions/${type}`, auth.requireUser, async (req, res) =>
       res.json({
         action: await room.action(user(res).id, type, command.parse(req.body).requestKey),
       }),
@@ -401,7 +444,7 @@ export async function createApp(
       active: !!u.admin_until && new Date(u.admin_until) > new Date(),
     });
   });
-  app.post('/api/admin/mfa/enroll', auth.requireUser, auth.verified, async (_req, res) => {
+  app.post('/api/admin/mfa/enroll', auth.requireUser, async (_req, res) => {
     const u = user(res);
     if (u.role === 'USER' || u.mfa_last_counter)
       throw new ApiError(403, 'ACCESS_DENIED', 'Không thể tạo lại xác thực hai bước.');
@@ -418,12 +461,12 @@ export async function createApp(
           u.id,
         ]);
       const totp = auth.totp(generated);
-      totp.label = u.email;
+      totp.label = u.username ?? u.email ?? u.id;
       return { secret: generated, uri: totp.toString() };
     });
     res.json(result);
   });
-  app.post('/api/admin/mfa/verify', auth.requireUser, auth.verified, async (req, res) => {
+  app.post('/api/admin/mfa/verify', auth.requireUser, async (req, res) => {
     const { code } = z
       .object({ code: z.string().regex(/^\d{6}$/) })
       .strict()

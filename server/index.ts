@@ -18,6 +18,7 @@ if (process.env.NODE_ENV === 'production') {
 } else {
   const { createServer } = await import('vite');
   const vite = await createServer({
+    cacheDir: process.env.VITE_CACHE_DIR ?? 'node_modules/.vite',
     server: { middlewareMode: true, hmr: { server: httpServer } },
     appType: 'spa',
   });

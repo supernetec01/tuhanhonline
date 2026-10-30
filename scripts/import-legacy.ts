@@ -38,7 +38,7 @@ try {
       ]);
   });
   console.log(
-    'Imported legacy accounts/inventory/purchases without changing source DB. Existing passwords retained; log in again and verify email.',
+    'Imported legacy accounts/inventory/purchases without changing source DB. Existing passwords retained; log in with your existing email or generated username; no email verification is needed to play.',
   );
 } finally {
   old.close();

@@ -11,13 +11,13 @@ export function useTemple(user: User | null) {
     [myAction, setMyAction] = useState<any>(null),
     [connected, setConnected] = useState(false),
     [gift, setGift] = useState<any>(null);
-  const inFlight = useRef(false),
+  const inFlight = useRef(-1),
     generation = useRef(0),
     seenGift = useRef(new Set<string>());
   const refresh = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
     const gen = generation.current;
+    if (inFlight.current === gen) return;
+    inFlight.current = gen;
     try {
       const [snapshot, me] = await Promise.all([
         api('/room'),
@@ -37,7 +37,7 @@ export function useTemple(user: User | null) {
         }
       }
     } finally {
-      inFlight.current = false;
+      if (inFlight.current === gen) inFlight.current = -1;
     }
   }, [user?.id]);
   useEffect(() => {

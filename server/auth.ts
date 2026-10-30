@@ -10,21 +10,45 @@ import nodemailer from 'nodemailer';
 import { ApiError, transaction, type Row } from './db.js';
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const hashOptions = { type: 2 as const, memoryCost: 65536, timeCost: 3, parallelism: 1 };
-export const credentials = z.object({
-  email: z
-    .email()
-    .max(254)
-    .transform((v) => v.toLowerCase()),
-  password: z.string().min(12).max(128),
-});
-export const registration = credentials
-  .extend({
-    name: z
+export const emailSchema = z
+  .email()
+  .max(254)
+  .transform((v) => v.toLowerCase());
+export const passwordSchema = z.string().min(12).max(128);
+export const usernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9_]{3,24}$/, 'Username gồm 3–24 chữ không dấu, số hoặc dấu gạch dưới');
+export const credentials = z
+  .union([
+    z
+      .object({
+        username: z
+          .string()
+          .trim()
+          .min(3)
+          .max(254)
+          .transform((v) => v.toLowerCase()),
+        password: passwordSchema,
+      })
+      .strict(),
+    z.object({ email: emailSchema, password: passwordSchema }).strict(),
+  ])
+  .transform((v) => ({ identifier: 'username' in v ? v.username : v.email, password: v.password }));
+export const registration = z
+  .object({
+    username: usernameSchema,
+    dharmaName: z
       .string()
       .trim()
       .min(2)
       .max(32)
       .regex(/^[\p{L}\p{N} ._-]+$/u),
+    password: passwordSchema,
+    email: z.union([emailSchema, z.literal('')]).optional(),
+    website: z.literal('').optional(),
+    challenge: z.object({ id: z.uuid(), solution: z.number().int().min(0).max(10000000) }).strict(),
   })
   .strict();
 export class AuthService {
@@ -82,6 +106,9 @@ export class AuthService {
     return {
       id: u.id,
       name: u.name,
+      dharmaName: u.name,
+      username: u.username,
+      hasRecoveryEmail: !!u.email,
       role: u.role,
       verified: !!u.verified_at,
       coins: u.coins,
@@ -129,13 +156,6 @@ export class AuthService {
       next(e);
     }
   };
-  verified: RequestHandler = (_req, res, next) => {
-    if (!res.locals.user?.verified_at) {
-      next(new ApiError(403, 'EMAIL_UNVERIFIED', 'Vui lòng xác minh email trước khi tham gia.'));
-      return;
-    }
-    next();
-  };
   admin(role: 'ADMIN' | 'OPERATOR' = 'OPERATOR'): RequestHandler {
     return (_req, res, next) => {
       const u = res.locals.user as Row;
@@ -143,7 +163,7 @@ export class AuthService {
         next(new ApiError(403, 'ACCESS_DENIED', 'Bạn không có quyền quản trị.'));
         return;
       }
-      if (!u.verified_at || !u.admin_until || new Date(u.admin_until).getTime() <= Date.now()) {
+      if (!u.admin_until || new Date(u.admin_until).getTime() <= Date.now()) {
         next(new ApiError(403, 'MFA_REQUIRED', 'Vui lòng xác thực hai bước.'));
         return;
       }

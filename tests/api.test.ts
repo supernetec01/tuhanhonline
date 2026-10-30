@@ -174,37 +174,75 @@ test('origin/custom header, JSON size, name and password validation', async () =
     400,
   );
 });
-test('registration stores Argon2id and hashed tokens; verification is required, single-use and not public', async () => {
+async function signupProof() {
+  const c = (await request('/auth/challenge')).data;
+  let solution = 0;
+  while (!digest(`${c.nonce}:${solution}`).startsWith('000')) solution++;
+  return { id: c.id, solution };
+}
+test('username signup has optional email, auto-login and immediate seat access without verification', async () => {
   const r = await request('/auth/register', {
-    email: 'First@Example.COM',
-    name: 'An Nhiên',
+    username: 'An_Nhien',
+    dharmaName: 'An Nhiên',
     password,
+    challenge: await signupProof(),
   });
   assert.equal(r.response.status, 201);
+  assert.equal(r.data.user.username, 'an_nhien');
+  assert.equal(r.data.user.dharmaName, 'An Nhiên');
   assert.equal(r.data.user.verified, false);
-  assert.equal(r.data.user.coins, 300);
+  assert.equal(r.data.user.hasRecoveryEmail, false);
   assert.equal(r.data.user.password_hash, undefined);
-  assert.equal(r.data.user.email, undefined);
+  assert.equal(r.data.user.coins, 300);
+  const cookie = r.response.headers.get('set-cookie')!.split(';')[0];
   assert.match(r.response.headers.get('set-cookie')!, /HttpOnly.*SameSite=Strict/);
-  const cookie = r.response.headers.get('set-cookie')!.split(';')[0],
-    u = (await pool.query('SELECT * FROM users')).rows[0];
-  assert.equal(u.email, 'first@example.com');
-  assert.match(u.password_hash, /^\$argon2id\$/);
+  const u = (await pool.query('SELECT * FROM users')).rows[0];
+  assert.equal(u.email, null);
   assert.ok(await argon2.verify(u.password_hash, password));
-  const stored = (await pool.query('SELECT token_hash FROM sessions')).rows[0];
-  assert.notEqual(stored.token_hash, cookie.split('=')[1]);
-  assert.equal(
-    (await request('/room/join', { requestKey: randomUUID() }, cookie)).data.code,
-    'EMAIL_UNVERIFIED',
+  assert.notEqual(
+    (await pool.query('SELECT token_hash FROM sessions')).rows[0].token_hash,
+    cookie.split('=')[1],
   );
-  const token = await mail(u.email, 'verify');
-  assert.equal((await request('/auth/verify-email', { token })).response.status, 200);
-  assert.equal((await request('/auth/verify-email', { token })).response.status, 400);
-  assert.equal((await request('/me', undefined, cookie)).data.user.verified, true);
+  assert.equal((await request('/me', undefined, cookie)).data.user.id, u.id);
+  const join = await request('/room/join', { requestKey: randomUUID(), seatId: 5 }, cookie);
+  assert.equal(join.response.status, 200);
+  assert.equal(join.data.entry.seat_id, 5);
+  const same = await request('/auth/register', {
+    username: 'AN_NHIEN',
+    dharmaName: 'Tên khác',
+    password,
+    challenge: await signupProof(),
+  });
+  assert.equal(same.response.status, 400);
+  const login = await request('/auth/login', { username: 'AN_NHIEN', password });
+  assert.equal(login.response.status, 200);
+});
+test('signup proof is required, single use and honeypot rejects bots; recovery email remains optional', async () => {
+  const body = { username: 'test_abc', dharmaName: 'An Lạc', email: 'First@Example.COM', password };
+  assert.equal((await request('/auth/register', body)).response.status, 400);
+  const challenge = await signupProof();
+  assert.equal(
+    (await request('/auth/register', { ...body, website: 'https://bot.example', challenge }))
+      .response.status,
+    400,
+  );
+  const r = await request('/auth/register', { ...body, challenge });
+  assert.equal(r.response.status, 201);
+  assert.equal(r.data.user.hasRecoveryEmail, true);
+  const cookie = r.response.headers.get('set-cookie')!.split(';')[0];
+  assert.equal((await pool.query('SELECT email FROM users')).rows[0].email, 'first@example.com');
   assert.equal(
     (await request('/room/join', { requestKey: randomUUID() }, cookie)).response.status,
     200,
   );
+  assert.equal(
+    (await request('/auth/register', { ...body, username: 'other_user', challenge })).data.code,
+    'BOT_CHECK_FAILED',
+  );
+  await request('/auth/resend-verification', {}, cookie);
+  const token = await mail('first@example.com', 'verify');
+  assert.equal((await request('/auth/verify-email', { token })).response.status, 200);
+  assert.equal((await request('/auth/verify-email', { token })).response.status, 400);
 });
 test('reset token expires, changes password once and revokes every old session', async () => {
   const u = await fixture();
@@ -221,6 +259,7 @@ test('reset token expires, changes password once and revokes every old session',
     200,
   );
   assert.equal((await request('/me', undefined, u.cookie)).data.user, null);
+  assert.equal((await request('/room/me', undefined, u.cookie)).data.entry, null);
   assert.equal(
     (await request('/auth/reset-password', { token, password: newPassword })).response.status,
     400,
@@ -245,6 +284,7 @@ test('logout revokes current cookie and frees the seat; expired/banned sessions 
   await join(u);
   assert.equal((await request('/auth/logout', {}, u.cookie)).response.status, 200);
   assert.equal((await request('/me', undefined, u.cookie)).data.user, null);
+  assert.equal((await request('/room/me', undefined, u.cookie)).data.entry, null);
   assert.equal((await instance.room.snapshot()).occupied, 0);
   const v = await fixture();
   await pool.query(
@@ -268,8 +308,13 @@ test('same error for wrong/unknown password, shared per-account and per-IP limit
     });
   assert.equal(wrong.response.status, 401);
   assert.deepEqual(wrong.data, unknown.data);
+  const username = (await pool.query('SELECT username FROM users WHERE id=$1', [u.id])).rows[0]
+    .username;
   for (let i = 0; i < 7; i++)
-    await request('/auth/login', { email: u.email, password: 'Wrong-Password-1234' });
+    await request('/auth/login', {
+      ...(i % 2 ? { username } : { email: u.email }),
+      password: 'Wrong-Password-1234',
+    });
   assert.equal((await request('/auth/login', { email: u.email, password })).response.status, 429);
 });
 test('100 simultaneous HTTP joins: exactly 36 seats, 64 FIFO waiters, no duplicates; repeated join idempotent', async () => {
@@ -307,6 +352,14 @@ test('FIFO invite reserves seat, blocks leapfrogging and expires to the next use
     JSON.stringify(settings),
   ]);
   const [a, b, c, d] = await Promise.all(Array.from({ length: 4 }, () => fixture()));
+  assert.equal(
+    (await instance.room.snapshot()).seats.filter((s: { enabled: boolean }) => s.enabled).length,
+    1,
+  );
+  assert.equal(
+    (await request('/room/join', { requestKey: randomUUID(), seatId: 6 }, a.cookie)).data.code,
+    'SLOT_OCCUPIED',
+  );
   await join(a);
   await join(b);
   await join(c);
@@ -669,16 +722,11 @@ test('TTS failure is isolated, expired broadcast token fails, and operator skip 
     else process.env.TTS_PROVIDER = previous;
   }
 });
-test('production requires HTTPS/SMTP and uses secure host-only cookies and strict script CSP', async () => {
+test('production requires HTTPS and optional SMTP and uses secure host-only cookies and strict script CSP', async () => {
   const previous = process.env.MAIL_MODE;
   let secureServer: Server | undefined;
   try {
     await assert.rejects(createApp({ pool, redis, production: true, origin }), /HTTPS/);
-    process.env.MAIL_MODE = 'file';
-    await assert.rejects(
-      createApp({ pool, redis, production: true, origin: 'https://temple.example' }),
-      /SMTP/,
-    );
     process.env.MAIL_MODE = 'smtp';
     const secure = await createApp({
       pool,

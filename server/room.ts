@@ -100,6 +100,11 @@ export class RoomService {
         await tx.query("SELECT count(*)::int AS count FROM room_entries WHERE status='WAITING'")
       ).rows[0].count;
       const capacity = Math.min(config.capacity, config.seatLayout.filter((s) => s.enabled).length);
+      const enabledIds = config.seatLayout
+        .filter((s) => s.enabled)
+        .map((s) => s.id)
+        .sort((a, b) => a - b)
+        .slice(0, capacity);
       const effect =
         (
           await tx.query(
@@ -128,6 +133,7 @@ export class RoomService {
         serverTime: new Date().toISOString(),
         seats: config.seatLayout.map((s) => ({
           ...s,
+          enabled: enabledIds.includes(s.id),
           code: String.fromCharCode(65 + Math.floor((s.id - 1) / 6)) + (((s.id - 1) % 6) + 1),
           player: entries.find((e) => e.seat_id === s.id && e.status === 'ACTIVE') ?? null,
           reserved: entries.some((e) => e.seat_id === s.id && e.status === 'INVITED'),
@@ -135,7 +141,7 @@ export class RoomService {
       };
     });
   }
-  async join(userId: string, key: string) {
+  async join(userId: string, key: string, preferredSeat?: number) {
     return transaction(this.pool, async (tx) => {
       await roomLock(tx);
       const { config } = await getSettings(tx);
@@ -156,7 +162,15 @@ export class RoomService {
       if (!entry) {
         if ((await tx.query("SELECT status FROM rooms WHERE id='main'")).rows[0].status !== 'open')
           throw new ApiError(409, 'ROOM_CLOSED', 'Chánh điện đang tạm đóng.');
-        const seat = (await this.freeSeats(tx, config))[0];
+        const free = await this.freeSeats(tx, config);
+        if (preferredSeat !== undefined && free.length && !free.includes(preferredSeat))
+          throw new ApiError(
+            409,
+            'SLOT_OCCUPIED',
+            'Đệm ngồi đã được giữ hoặc đang tắt. Hãy chọn vị trí khác.',
+          );
+        const seat =
+          preferredSeat !== undefined && free.includes(preferredSeat) ? preferredSeat : free[0];
         const id = randomUUID();
         entry = (
           await tx.query(
