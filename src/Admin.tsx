@@ -1,3 +1,8 @@
+import { NpcEditor } from './NpcEditor';
+import { legacyProducts } from '../server/store-config';
+import { StoreEditor } from './StoreEditor';
+import { MediaEditor } from './MediaEditor';
+import { ModerationPanel } from './Community';
 import { LiveEditor } from './LiveEditor';
 import { useEffect, useState } from 'react';
 import { api, type User } from './api';
@@ -17,7 +22,9 @@ export function Admin() {
     [dirty, setDirty] = useState(false),
     [preview, setPreview] = useState(false),
     [broadcast, setBroadcast] = useState('');
+  const hasAccess = user?.role === 'ADMIN' || !!mfa?.active;
   async function load() {
+    if (user?.role === 'MODERATOR') return;
     const d = await api('/admin/dashboard');
     setDashboard(d);
     if (user?.role === 'ADMIN') {
@@ -31,13 +38,14 @@ export function Admin() {
     api('/me')
       .then(async ({ user }) => {
         setUser(user);
-        if (user && user.role !== 'USER') setMfa(await api('/admin/mfa/status'));
+        if (user && user.role !== 'USER' && user.role !== 'ADMIN')
+          setMfa(await api('/admin/mfa/status'));
       })
       .catch((e) => setError(e.message));
   }, []);
   useEffect(() => {
-    if (mfa?.active) void run(load);
-  }, [mfa?.active, user?.id]);
+    if (hasAccess) void run(load);
+  }, [hasAccess, user?.id]);
   useEffect(() => {
     const listener = (e: BeforeUnloadEvent) => {
       if (dirty) {
@@ -75,9 +83,9 @@ export function Admin() {
         <a href="/">Trở về chánh điện →</a>
       </header>
       <h1>Quản trị chánh điện</h1>
+      {hasAccess && (user?.role === 'ADMIN' || user?.role === 'MODERATOR') && <ModerationPanel />}
       <p className="admin-intro">
-        Tài khoản có quyền quản trị và mã xác thực hai bước mới được thay đổi cấu hình. Mỗi thay đổi
-        đều có lịch sử.
+        Tài khoản Admin đã đăng nhập có thể quản trị trực tiếp. Mỗi thay đổi đều có lịch sử.
       </p>
       {error && (
         <p className="form-error" role="alert">
@@ -97,7 +105,7 @@ export function Admin() {
           </p>
           <a href="/">Đến trang đăng nhập</a>
         </div>
-      ) : !mfa?.active ? (
+      ) : !hasAccess ? (
         <section className="admin-panel mfa-panel">
           <h2>Xác thực hai bước</h2>
           <p>Nhập mã 6 chữ số từ ứng dụng xác thực. Phiên quản trị có hiệu lực 15 phút.</p>
@@ -225,12 +233,12 @@ export function Admin() {
                 </label>
                 {(
                   [
-                    ['capacity', 'Sức chứa tối đa', 1, 36],
+                    ['capacity', 'Sức chứa tối đa', 1, 72],
                     ['sessionMinutes', 'Thời lượng phiên (phút)', 5, 120],
                     ['invitationSeconds', 'Hạn lời mời (giây)', 15, 120],
                     ['graceSeconds', 'Giữ chỗ khi mất kết nối (giây)', 30, 300],
                     ['bowCooldown', 'Chờ giữa hai lần vái (giây)', 3, 60],
-                    ['prostrateCooldown', 'Chờ giữa hai lần lạy (giây)', 5, 120],
+                    ['prostrateCooldown', 'Chờ giữa hai lần lạy (giây)', 5, 600],
                     ['incenseCooldown', 'Chờ giữa hai lần dâng hương (giây)', 30, 600],
                     ['incenseDuration', 'Thời lượng dâng hương (giây)', 5, 30],
                     ['ttsInterval', 'Khoảng cách lời chúc (giây)', 10, 120],
@@ -265,7 +273,7 @@ export function Admin() {
                 </label>
               </div>
               <details>
-                <summary>Sơ đồ 36 ghế · kéo để chỉnh, nhấp đôi để bật/tắt</summary>
+                <summary>Sơ đồ tối đa 72 ghế · kéo để chỉnh, nhấp đôi để bật/tắt</summary>
                 <p>Thay đổi sơ đồ/sức chứa chỉ được xuất bản khi phòng không còn người giữ ghế.</p>
                 <div
                   className="layout-editor"
@@ -408,6 +416,124 @@ export function Admin() {
                   ))}
                 </div>
               </details>
+              <section className="admin-panel">
+                <h2>Kinh tế & cộng đồng V8</h2>
+                <label>
+                  Ngoại lệ kiểm duyệt (toàn bộ câu, mỗi dòng một câu)
+                  <textarea
+                    value={config.chat.allowlist.join('\n')}
+                    onChange={(e) =>
+                      update('chat', {
+                        ...config.chat,
+                        allowlist: e.target.value.split('\n').filter(Boolean),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Giới hạn xu/ngày
+                  <input
+                    type="number"
+                    min="1"
+                    max="1440"
+                    value={config.dailyCoinCap}
+                    onChange={(e) => update('dailyCoinCap', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  Chat
+                  <select
+                    value={config.chat.mode}
+                    onChange={(e) =>
+                      update('chat', {
+                        ...config.chat,
+                        mode: e.target.value as Settings['chat']['mode'],
+                      })
+                    }
+                  >
+                    <option value="open">Mở</option>
+                    <option value="read-only">Chỉ đọc</option>
+                    <option value="disabled">Tắt</option>
+                  </select>
+                </label>
+                <label>
+                  Ánh sáng
+                  <select
+                    value={config.lighting}
+                    onChange={(e) => update('lighting', e.target.value as Settings['lighting'])}
+                  >
+                    <option value="auto">Tự động</option>
+                    <option value="day">Ngày</option>
+                    <option value="night">Đêm</option>
+                  </select>
+                </label>
+                {config.dotPrices.map((price, i) => (
+                  <label key={i}>
+                    Giá cặp chấm {i + 1}
+                    <input
+                      type="number"
+                      min="0"
+                      value={price}
+                      onChange={(e) =>
+                        update(
+                          'dotPrices',
+                          config.dotPrices.map((v, n) => (n === i ? Number(e.target.value) : v)),
+                        )
+                      }
+                    />
+                  </label>
+                ))}
+                <label>
+                  Lời nguyện (mỗi dòng một câu)
+                  <textarea
+                    value={config.prayerTemplates.join('\n')}
+                    onChange={(e) => update('prayerTemplates', e.target.value.split('\n'))}
+                  />
+                </label>
+                <label>
+                  Cụm từ từ chối (mỗi dòng một cụm)
+                  <textarea
+                    value={config.chat.rejectedTerms.join('\n')}
+                    onChange={(e) =>
+                      update('chat', {
+                        ...config.chat,
+                        rejectedTerms: e.target.value.split('\n').filter(Boolean),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Cụm từ cần duyệt
+                  <textarea
+                    value={config.chat.reviewTerms.join('\n')}
+                    onChange={(e) =>
+                      update('chat', {
+                        ...config.chat,
+                        reviewTerms: e.target.value.split('\n').filter(Boolean),
+                      })
+                    }
+                  />
+                </label>
+              </section>
+              <NpcEditor
+                value={config}
+                onChange={(v) => {
+                  setConfig(v);
+                  setDirty(true);
+                }}
+              />
+              <StoreEditor
+                value={config.store}
+                legacy={legacyProducts(config.shop)}
+                onChange={(value) => update('store', value)}
+              />
+              <MediaEditor
+                value={config}
+                onChange={(value) => {
+                  setConfig(value);
+                  setDirty(true);
+                }}
+              />
               <LiveEditor value={config.live} onChange={(value) => update('live', value)} />
               <div className="admin-actions">
                 <button className="subtle-button" onClick={() => setPreview(!preview)}>

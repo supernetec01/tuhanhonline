@@ -19,7 +19,7 @@ Chọn đệm khi chưa đăng nhập mở đăng ký; đăng ký thành công t
 - POST `/api/auth/login`: `{username,password}`; `username` có thể là email tài khoản cũ. Body cũ `{email,password}` vẫn được hỗ trợ cho tương thích, không cho truyền cả hai.
 - `/api/me`: thêm `username`, `dharmaName`, `hasRecoveryEmail`. Không trả email hoặc password hash. Chơi game/nghi lễ/nhận lời mời không cần `verified_at`.
 - Email verify/resend còn là tùy chọn bảo vệ email khôi phục; không phải điều kiện vào phòng. Khôi phục bằng email vẫn dùng token một lần, expiry và thu hồi mọi phiên khi đổi mật khẩu. Production chưa cấu hình SMTP thì API recovery báo chưa sẵn sàng, không giả vờ gửi thư. Không có email thì chưa thể tự khôi phục tài khoản; UI thông báo rõ.
-- Admin vẫn cần role và TOTP MFA, không yêu cầu email. CLI `pnpm admin:promote <username-hoặc-email>` chỉ nâng quyền user đã tồn tại, có audit. Không tạo admin mặc định.
+- Admin cần role ADMIN và phiên đăng nhập mật khẩu, không yêu cầu email hoặc mã TOTP. OPERATOR/MODERATOR tiếp tục cần MFA. CLI `pnpm admin:promote <username-hoặc-email>` chỉ nâng quyền user đã tồn tại, có audit. Không tạo admin mặc định. Xem [ADMIN_ACCESS.md](ADMIN_ACCESS.md).
 - POST `/api/room/join`: `{requestKey,seatId?:1..36}`. `seatId` chỉ là yêu cầu ghế trống, không cho chuyển ghế của người khác/chen hàng. Trả `SLOT_OCCUPIED` khi ghế bị giữ/tắt mà phòng còn chỗ khác; nếu hết chỗ trả WAITING. Idempotency vẫn trả kết quả cũ khi retry.
 
 Giữ Argon2id, secure/HttpOnly/SameSite cookie, Origin/custom-header CSRF, Redis rate limit, SQL tham số hóa, MFA. Proof-of-work và honeypot là lớp chống bot nhẹ, không thay thế WAF/CAPTCHA khi có tấn công phân tán.

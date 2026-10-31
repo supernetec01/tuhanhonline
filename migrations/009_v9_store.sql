@@ -1,0 +1,4 @@
+ALTER TABLE users ADD COLUMN cosmetics jsonb NOT NULL DEFAULT '{"seat":"seat_moc","accessory":"accessory_none","dotStyle":"dots_brown","nameFrame":"frame_none"}';
+INSERT INTO inventory(user_id,outfit_id) SELECT u.id,i.id FROM users u CROSS JOIN (VALUES ('seat_moc'),('accessory_none'),('dots_brown'),('frame_none'),('robe_pham')) i(id) ON CONFLICT DO NOTHING;
+CREATE TABLE store_commands(user_id uuid NOT NULL REFERENCES users(id),request_key uuid NOT NULL,item_id text NOT NULL,price integer NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,request_key));
+CREATE TABLE shop_assets(id uuid PRIMARY KEY,file_name text NOT NULL,mime text NOT NULL,width integer NOT NULL CHECK(width BETWEEN 1 AND 1024),height integer NOT NULL CHECK(height BETWEEN 1 AND 1024),sha256 text NOT NULL,created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());

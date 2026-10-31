@@ -27,6 +27,9 @@ export function Avatar({
   className = '',
   outfitId = 'linen',
   accessory = 'none',
+  dots = 0,
+  design,
+  hideShadow = false,
   durationMs,
   elapsedMs = 0,
 }: {
@@ -37,6 +40,9 @@ export function Avatar({
   className?: string;
   outfitId?: string;
   accessory?: string;
+  dots?: number;
+  design?: string;
+  hideShadow?: boolean;
   durationMs?: number;
   elapsedMs?: number;
 }) {
@@ -69,7 +75,7 @@ export function Avatar({
           <stop offset="1" stopColor={color} />
         </linearGradient>
       </defs>
-      <g data-layer="shadow">
+      <g data-layer="shadow" opacity={hideShadow ? 0 : 1}>
         <ellipse cx="60" cy="129" rx="48" ry="9" fill="#382b28" opacity=".15" />
       </g>
       <g data-layer="body">
@@ -82,11 +88,21 @@ export function Avatar({
       <g data-layer="robe">
         <path
           d={
-            outfitId === 'cloud'
-              ? 'M34 76Q14 87 15 117L41 123H80L106 117Q103 86 84 76Z'
-              : outfitId === 'lotus'
-                ? 'M35 76Q24 88 21 114Q60 132 99 114Q96 87 84 76Z'
-                : 'M35 76Q23 86 23 112L43 120H78L97 112Q94 84 83 76Z'
+            design === 'long'
+              ? 'M29 77Q10 86 9 120L35 133H85L112 120Q109 86 89 77Z'
+              : design === 'belt'
+                ? 'M36 76L23 98L34 119L60 128L88 119L100 97L84 76Z'
+                : design === 'ceremony'
+                  ? 'M29 78L12 108L35 125L87 127L109 110L91 78Z'
+                  : design === 'lotus'
+                    ? 'M34 76Q14 90 18 124Q60 137 102 124Q107 90 86 76Z'
+                    : design === 'jade'
+                      ? 'M32 76Q14 85 9 114L36 131H84L111 114Q106 85 88 76Z'
+                      : outfitId === 'cloud'
+                        ? 'M34 76Q14 87 15 117L41 123H80L106 117Q103 86 84 76Z'
+                        : outfitId === 'lotus'
+                          ? 'M35 76Q24 88 21 114Q60 132 99 114Q96 87 84 76Z'
+                          : 'M35 76Q23 86 23 112L43 120H78L97 112Q94 84 83 76Z'
           }
           fill={`url(#robe${id})`}
           stroke={color}
@@ -158,6 +174,15 @@ export function Avatar({
           opacity=".4"
           strokeLinecap="round"
         />
+        {Array.from({ length: Math.max(0, Math.min(8, dots)) }, (_, i) => (
+          <circle
+            key={i}
+            cx={48 + (i % 4) * 8}
+            cy={28 + Math.floor(i / 4) * 8}
+            r="2.5"
+            fill="#fff0af"
+          />
+        ))}
         {front && (
           <>
             <path

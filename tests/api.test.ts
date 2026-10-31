@@ -1,9 +1,9 @@
 import { after, before, beforeEach, test } from 'node:test';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { Queue } from 'bullmq';
 import { redisConnection } from '../server/jobs.js';
 import assert from 'node:assert/strict';
-import { type Server } from 'node:http';
+import { type Server, createServer } from 'node:http';
 import { randomUUID, randomBytes, createHmac } from 'node:crypto';
 import { mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -33,6 +33,8 @@ let root: Pool,
   hash: string,
   temp: string;
 const originalMailDir = process.env.MAIL_OUTBOX_DIR;
+const originalMediaDir = process.env.MEDIA_DIR;
+const originalShopAssetDir = process.env.SHOP_ASSET_DIR;
 async function request(
   path: string,
   body?: unknown,
@@ -94,6 +96,8 @@ before(async () => {
   redis = rawRedis.duplicate({ keyPrefix: prefix });
   temp = await mkdtemp(tmpdir() + '/temple-tests-');
   process.env.MAIL_OUTBOX_DIR = temp;
+  process.env.MEDIA_DIR = temp + '/assets';
+  process.env.SHOP_ASSET_DIR = temp + '/shop-assets';
   hash = await argon2.hash(password, hashOptions);
   instance = await createApp({ pool, redis, origin });
   server = instance.app.listen(0, '127.0.0.1');
@@ -101,6 +105,7 @@ before(async () => {
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 });
 beforeEach(async () => {
+  await pool.query('DELETE FROM leaderboard_snapshots');
   await pool.query(
     'TRUNCATE effect_jobs,ceremony_runs,users,room_entries,ritual_actions,commands,inventory,purchases,sessions,user_tokens,config_revisions,audit_logs,outbox,live_events,gift_streaks,tts_jobs,broadcast_tokens RESTART IDENTITY CASCADE',
   );
@@ -127,6 +132,10 @@ after(async () => {
     await root.end();
   }
   if (temp) await rm(temp, { recursive: true, force: true });
+  if (originalShopAssetDir === undefined) delete process.env.SHOP_ASSET_DIR;
+  else process.env.SHOP_ASSET_DIR = originalShopAssetDir;
+  if (originalMediaDir === undefined) delete process.env.MEDIA_DIR;
+  else process.env.MEDIA_DIR = originalMediaDir;
   if (originalMailDir === undefined) delete process.env.MAIL_OUTBOX_DIR;
   else process.env.MAIL_OUTBOX_DIR = originalMailDir;
 });
@@ -489,19 +498,97 @@ test('wardrobe rejects client price/ownership hacks, atomic parallel buying and 
     400,
   );
 });
-test('admin RBAC, MFA enrollment, code replay protection, draft/publish/rollback and occupied-seat guard', async () => {
+test('admin password session, legacy MFA and live role/session revocation', async () => {
+  const admin = await fixture('Chủ chùa', true, 'ADMIN');
+  assert.equal((await request('/admin/config')).response.status, 401);
+  assert.equal(
+    (await request('/auth/login', { email: admin.email, password: 'Wrong-Password-1234' })).response
+      .status,
+    401,
+  );
+  const login = await request('/auth/login', { email: admin.email, password });
+  assert.equal(login.response.status, 200);
+  const cookie = login.response.headers.get('set-cookie')!.split(';')[0];
+  assert.equal((await request('/admin/config', undefined, cookie)).response.status, 200);
+  assert.deepEqual((await request('/admin/mfa/status', undefined, cookie)).data, {
+    enrolled: false,
+    required: false,
+    active: true,
+  });
+  const enrollment = await request('/admin/mfa/enroll', {}, cookie);
+  assert.equal(enrollment.response.status, 200);
+  await pool.query('UPDATE users SET mfa_last_counter=1 WHERE id=$1', [admin.id]);
+  await pool.query(
+    "UPDATE sessions SET admin_until=clock_timestamp()-interval '1 hour' WHERE user_id=$1",
+    [admin.id],
+  );
+  assert.deepEqual((await request('/admin/mfa/status', undefined, cookie)).data, {
+    enrolled: true,
+    required: false,
+    active: true,
+  });
+  assert.equal((await request('/admin/dashboard', undefined, cookie)).response.status, 200);
+  assert.equal((await request('/admin/chat', undefined, cookie)).response.status, 200);
+  await pool.query("UPDATE users SET role='USER' WHERE id=$1", [admin.id]);
+  for (const path of ['/admin/config', '/admin/dashboard', '/admin/chat', '/admin/mfa/status'])
+    assert.equal((await request(path, undefined, cookie)).response.status, 403, path);
+  assert.equal(
+    (await request('/admin/config/draft', { config: defaultSettings, expectedId: null }, cookie))
+      .response.status,
+    403,
+  );
+  await pool.query("UPDATE users SET role='ADMIN',banned=true WHERE id=$1", [admin.id]);
+  assert.equal((await request('/admin/config', undefined, cookie)).response.status, 401);
+  await pool.query('UPDATE users SET banned=false WHERE id=$1', [admin.id]);
+  assert.equal((await request('/auth/logout', {}, cookie)).response.status, 200);
+  assert.equal((await request('/admin/config', undefined, cookie)).response.status, 401);
+});
+test('delegated roles still require MFA, reject replay and cannot publish admin configuration', async () => {
+  const operator = await fixture('Điều phối LIVE', true, 'OPERATOR'),
+    moderator = await fixture('Kiểm duyệt', true, 'MODERATOR');
+  assert.equal(
+    (await request('/admin/dashboard', undefined, operator.cookie)).data.code,
+    'MFA_REQUIRED',
+  );
+  assert.equal(
+    (await request('/admin/chat', undefined, moderator.cookie)).data.code,
+    'MFA_REQUIRED',
+  );
+  assert.deepEqual((await request('/admin/mfa/status', undefined, operator.cookie)).data, {
+    enrolled: false,
+    required: true,
+    active: false,
+  });
+  const enrollment = await request('/admin/mfa/enroll', {}, operator.cookie);
+  assert.ok(enrollment.data.uri.startsWith('otpauth://'));
+  const code = new TOTP({ secret: Secret.fromBase32(enrollment.data.secret) }).generate();
+  assert.equal(
+    (await request('/admin/mfa/verify', { code }, operator.cookie)).response.status,
+    200,
+  );
+  assert.equal(
+    (await request('/admin/mfa/verify', { code }, operator.cookie)).data.code,
+    'MFA_REPLAY',
+  );
+  assert.equal(
+    (await request('/admin/dashboard', undefined, operator.cookie)).response.status,
+    200,
+  );
+  assert.equal((await request('/admin/config', undefined, operator.cookie)).response.status, 403);
+  await pool.query(
+    "UPDATE sessions SET admin_until=clock_timestamp()-interval '1 second' WHERE user_id=$1",
+    [operator.id],
+  );
+  assert.equal(
+    (await request('/admin/dashboard', undefined, operator.cookie)).data.code,
+    'MFA_REQUIRED',
+  );
+});
+test('admin RBAC without MFA, draft/publish/rollback and occupied-seat guard', async () => {
   const regular = await fixture(),
     admin = await fixture('Chủ chùa', true, 'ADMIN');
   assert.equal((await request('/admin/config', undefined, regular.cookie)).response.status, 403);
-  assert.equal((await request('/admin/config', undefined, admin.cookie)).data.code, 'MFA_REQUIRED');
-  const enrollment = await request('/admin/mfa/enroll', {}, admin.cookie);
-  assert.ok(enrollment.data.uri.startsWith('otpauth://'));
-  const code = new TOTP({ secret: Secret.fromBase32(enrollment.data.secret) }).generate();
-  assert.equal((await request('/admin/mfa/verify', { code }, admin.cookie)).response.status, 200);
-  assert.equal(
-    (await request('/admin/mfa/verify', { code }, admin.cookie)).data.code,
-    'MFA_REPLAY',
-  );
+  assert.equal((await request('/admin/config', undefined, admin.cookie)).response.status, 200);
   const previous = await instance.cms.state();
   const config = { ...defaultSettings, roomName: 'Chánh điện Tâm An' };
   const draft = await request('/admin/config/draft', { config, expectedId: null }, admin.cookie);
@@ -841,7 +928,7 @@ test('old TTS backlog falls back to text; audio ducking restores latest user vol
   const mixer = new BroadcastAudioManager(channel, 0.2);
   mixer.setVolume(0.8);
   mixer.setSpeaking(true);
-  assert.equal(channel.volume, 0.2);
+  assert.ok(Math.abs(channel.volume - 0.16) < 1e-9);
   mixer.setVolume(0.6);
   mixer.setSpeaking(false);
   assert.equal(channel.volume, 0.6);
@@ -900,6 +987,831 @@ test('BullMQ worker resumes deadlines after actual process restart without losin
     await queue.close();
   }
 });
+test('V8 minute rewards stop at eligibility deadline, cap per day and do not repeat across reconciliation', async () => {
+  const u = await fixture(),
+    w = await fixture();
+  const e = await join(u);
+  await pool.query(
+    "UPDATE config_revisions SET config=jsonb_set(config,'{dailyCoinCap}','2') WHERE status='published'",
+  );
+  await pool.query(
+    "UPDATE room_entries SET reward_cursor=clock_timestamp()-interval '185 seconds' WHERE id=$1",
+    [e.id],
+  );
+  await instance.room.tick();
+  await instance.room.tick();
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 302);
+  const journal = (await request('/journal', undefined, u.cookie)).data;
+  assert.equal(journal.cultivated_minutes, 3);
+  assert.equal(
+    (await pool.query('SELECT count(*)::int AS n FROM coin_ledger WHERE user_id=$1', [u.id]))
+      .rows[0].n,
+    2,
+  );
+  assert.equal((await request('/me', undefined, w.cookie)).data.user.coins, 300);
+  await pool.query(
+    "UPDATE room_entries SET reward_cursor=clock_timestamp()-interval '3 minutes',disconnect_deadline=clock_timestamp()-interval '2 minutes' WHERE id=$1",
+    [e.id],
+  );
+  await instance.room.tick();
+  assert.equal(await instance.room.myEntry(u.id), null);
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 302);
+});
+test('V8 merit is awarded once on completion, wallets separate and incense cooldown starts with actual turn', async () => {
+  const u = await fixture(),
+    v = await fixture();
+  await join(u);
+  await join(v);
+  const key = randomUUID();
+  let r = await request('/actions/bow', { requestKey: key }, u.cookie);
+  assert.equal(r.data.action.cooldown_ms, 60000);
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.merit, 0);
+  await pool.query(
+    "UPDATE ritual_actions SET ends_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+    [r.data.action.id],
+  );
+  await instance.room.tick();
+  await instance.room.tick();
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.merit, 1);
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 300);
+  await request('/actions/bow', { requestKey: key }, u.cookie);
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.merit, 1);
+  r = await request('/actions/incense', { requestKey: randomUUID() }, u.cookie);
+  assert.equal(r.data.action.duration_ms, 5000);
+  assert.equal(r.data.action.cooldown_ms, 300000);
+  const queued = await request('/actions/incense', { requestKey: randomUUID() }, v.cookie);
+  assert.equal(queued.data.action.status, 'QUEUED');
+  await pool.query(
+    "UPDATE ritual_actions SET requested_at=clock_timestamp()-interval '20 minutes' WHERE id=$1",
+    [queued.data.action.id],
+  );
+  await pool.query(
+    "UPDATE ritual_actions SET ends_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+    [r.data.action.id],
+  );
+  await instance.room.tick();
+  await pool.query(
+    "UPDATE ritual_actions SET ends_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+    [queued.data.action.id],
+  );
+  await instance.room.tick();
+  assert.equal((await request('/me', undefined, v.cookie)).data.user.merit, 10);
+  assert.equal(
+    (await request('/actions/incense', { requestKey: randomUUID() }, v.cookie)).response.status,
+    429,
+  );
+});
+test('V8 dots are sequential, atomic, bounded at 8 and idempotent', async () => {
+  const u = await fixture();
+  await pool.query('UPDATE users SET coins=10000 WHERE id=$1', [u.id]);
+  assert.equal(
+    (await request('/wardrobe/dots', { pair: 2, requestKey: randomUUID() }, u.cookie)).response
+      .status,
+    409,
+  );
+  const key = randomUUID();
+  const results = await Promise.all([
+    request('/wardrobe/dots', { pair: 1, requestKey: key }, u.cookie),
+    request('/wardrobe/dots', { pair: 1, requestKey: key }, u.cookie),
+  ]);
+  assert.ok(results.every((r) => r.response.status === 200));
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 9800);
+  for (const pair of [2, 3, 4])
+    assert.equal(
+      (await request('/wardrobe/dots', { pair, requestKey: randomUUID() }, u.cookie)).response
+        .status,
+      200,
+    );
+  const me = (await request('/me', undefined, u.cookie)).data.user;
+  assert.equal(me.dots, 8);
+  assert.equal(me.coins, 6300);
+  assert.equal(me.merit, 0);
+  assert.equal(
+    (await request('/wardrobe/dots', { pair: 5, requestKey: randomUUID() }, u.cookie)).response
+      .status,
+    400,
+  );
+});
+test('V8 moderated chat, reports and MFA moderator mute preserve seats and balances', async () => {
+  const u = await fixture(),
+    mod = await fixture('Điều phối', true, 'MODERATOR'),
+    operator = await fixture('LIVE', true, 'OPERATOR');
+  await join(u);
+  await pool.query(
+    "UPDATE sessions SET admin_until=clock_timestamp()+interval '5 minutes' WHERE user_id IN ($1,$2)",
+    [mod.id, operator.id],
+  );
+  assert.equal((await request('/chat', { body: 'Xin chào bình an' }, '')).response.status, 401);
+  const safe = await request('/chat', { body: 'Xin chào bình an' }, u.cookie);
+  assert.equal(safe.data.status, 'APPROVED');
+  assert.equal((await request('/chat', { body: 'Tin quá nhanh' }, u.cookie)).response.status, 429);
+  await pool.query(
+    "UPDATE chat_messages SET created_at=clock_timestamp()-interval '6 seconds' WHERE user_id=$1",
+    [u.id],
+  );
+  assert.equal(
+    (await request('/chat', { body: 'Xin chào bình an' }, u.cookie)).data.status,
+    'PENDING_REVIEW',
+  );
+  await pool.query(
+    "UPDATE chat_messages SET created_at=clock_timestamp()-interval '6 seconds' WHERE user_id=$1",
+    [u.id],
+  );
+  assert.equal((await request('/chat', { body: 'ĐỊT MẸ' }, u.cookie)).data.status, 'REJECTED');
+  assert.equal((await request('/chat')).data.messages.length, 1);
+  await request('/chat/report', { id: safe.data.id, reason: 'Cần kiểm tra nội dung' }, mod.cookie);
+  assert.equal((await request('/admin/chat', undefined, operator.cookie)).response.status, 403);
+  assert.equal((await request('/admin/chat', undefined, mod.cookie)).response.status, 200);
+  assert.equal(
+    (
+      await request(
+        '/admin/chat/mute',
+        { userId: u.id, minutes: 10, reason: 'Cảnh báo spam tin nhắn' },
+        mod.cookie,
+      )
+    ).response.status,
+    200,
+  );
+  assert.equal((await request('/chat', { body: 'Một tin khác' }, u.cookie)).data.code, 'MUTE_CHAT');
+  assert.equal((await instance.room.myEntry(u.id))?.status, 'ACTIVE');
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 300);
+  assert.equal(
+    (await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE action='chat.mute'")).rows[0]
+      .n,
+    1,
+  );
+  assert.equal(
+    (await request('/chat/appeal', { body: 'Xin xem lại tin nhắn của tôi' }, u.cookie)).response
+      .status,
+    200,
+  );
+  const appeal = (await request('/admin/chat/appeals', undefined, mod.cookie)).data.appeals[0];
+  assert.equal(
+    (
+      await request(
+        '/admin/chat/appeals',
+        { id: appeal.id, resolution: 'Đã kiểm tra và gỡ khóa chat.', unmute: true },
+        mod.cookie,
+      )
+    ).response.status,
+    200,
+  );
+  assert.equal((await request('/chat/me', undefined, u.cookie)).data.sanctions.length, 0);
+  assert.equal((await request('/chat/me', undefined, u.cookie)).data.appeals[0].status, 'RESOLVED');
+  assert.equal(
+    (
+      await request(
+        '/admin/chat/moderate',
+        { id: safe.data.id, status: 'DELETED', reason: 'Xóa theo báo cáo thử nghiệm' },
+        mod.cookie,
+      )
+    ).response.status,
+    200,
+  );
+  assert.equal((await request('/chat')).data.messages.length, 0);
+});
+test('V8 prayer templates reject arbitrary text and rankings remain frozen for 300 seconds', async () => {
+  const u = await fixture();
+  assert.equal((await request('/prayers', { template: 'Tự viết' }, u.cookie)).response.status, 400);
+  assert.equal(
+    (await request('/prayers', { template: 'Cầu bình an' }, u.cookie)).response.status,
+    200,
+  );
+  await pool.query('DELETE FROM leaderboard_snapshots');
+  await instance.room.tick();
+  await pool.query('UPDATE users SET merit=99 WHERE id=$1', [u.id]);
+  await instance.room.tick();
+  assert.equal((await request('/leaderboards', undefined, u.cookie)).data.mine.merit, 0);
+  await pool.query(
+    "UPDATE leaderboard_snapshots SET created_at=clock_timestamp()-interval '301 seconds'",
+  );
+  await instance.room.tick();
+  assert.equal((await request('/leaderboards', undefined, u.cookie)).data.mine.merit, 99);
+});
+
+test('V8 media measures actual audio duration, enforces admin role and serves static blessings', async () => {
+  const admin = await fixture('Quản trị', true, 'ADMIN'),
+    u = await fixture();
+  const createAudio = (seconds: number) =>
+    execFileSync('ffmpeg', [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440',
+      '-t',
+      String(seconds),
+      '-c:a',
+      'libvorbis',
+      '-f',
+      'ogg',
+      'pipe:1',
+    ]).toString('base64');
+  const data = createAudio(0.25);
+  assert.equal(
+    (await request('/admin/media/upload', { kind: 'voice', title: 'Voice test', data }, u.cookie))
+      .response.status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        '/admin/media/upload',
+        { kind: 'voice', title: 'Overlong', data: createAudio(11) },
+        admin.cookie,
+      )
+    ).data.code,
+    'MEDIA_DURATION',
+  );
+  const asset = await request(
+    '/admin/media/upload',
+    { kind: 'voice', title: 'Voice test', data },
+    admin.cookie,
+  );
+  assert.equal(asset.response.status, 200, JSON.stringify(asset.data));
+  assert.ok(asset.data.durationMs <= 10000);
+  const config = structuredClone(defaultSettings);
+  config.blessings = [{ id: 'test', text: 'Chúc bạn bình an.', audioId: asset.data.id }];
+  const saved = await instance.cms.save(admin.id, config, null);
+  await instance.cms.publish(admin.id, saved.id);
+  await new MockLiveAdapter(instance.live).receive({
+    liveId: 'static-test',
+    sourceEventId: 'gift',
+    senderId: 'sender',
+    displayName: 'An Nhiên',
+    giftId: 'rose',
+    count: 1,
+  });
+  await instance.live.generateNext();
+  const job = (await pool.query('SELECT * FROM tts_jobs WHERE asset_id=$1', [asset.data.id]))
+    .rows[0];
+  assert.equal(job.mode, 'static');
+  assert.equal(job.status, 'READY');
+  assert.equal(job.text, 'Chúc bạn bình an.');
+  assert.equal((await instance.live.audio(job.id)).subarray(0, 4).toString(), 'OggS');
+  await assert.rejects(
+    pool.query('UPDATE coin_ledger SET amount=amount WHERE id=-1').then(async () => {
+      await pool.query(
+        "INSERT INTO coin_ledger(user_id,amount,source) VALUES($1,1,'test-immutable')",
+        [u.id],
+      );
+      await pool.query("UPDATE coin_ledger SET amount=2 WHERE source='test-immutable'");
+    }),
+    /append-only/,
+  );
+});
+
+test('V9 catalog contains six new robes, ten seats and five dot styles; only cosmetics are purchasable', async () => {
+  const { data } = await request('/store');
+  assert.equal(data.title, 'Bảo Các Thanh Liên');
+  assert.equal(
+    data.products.filter((p: any) => p.category === 'robe' && p.id.startsWith('robe_')).length,
+    6,
+  );
+  assert.equal(data.products.filter((p: any) => p.category === 'seat').length, 10);
+  assert.equal(data.products.filter((p: any) => p.category === 'dotStyle').length, 5);
+  assert.ok(
+    data.products.every((p: any) => !('merit' in p) && !('cooldown' in p) && !('priority' in p)),
+  );
+  assert.equal(
+    (await request('/store/buy', { itemId: 'seat_hong', requestKey: randomUUID() })).response
+      .status,
+    401,
+  );
+  const u = await fixture();
+  assert.equal(
+    (
+      await request(
+        '/store/buy',
+        { itemId: 'seat_hong', requestKey: randomUUID(), price: 0 },
+        u.cookie,
+      )
+    ).response.status,
+    400,
+  );
+  assert.equal(
+    (await request('/store/equip', { itemId: 'seat_hong' }, u.cookie)).response.status,
+    403,
+  );
+});
+test('V9 simultaneous duplicate purchases debit once and request keys cannot cross old/new shops', async () => {
+  const u = await fixture(),
+    key = randomUUID();
+  const results = await Promise.all(
+    Array.from({ length: 12 }, () =>
+      request('/store/buy', { itemId: 'dots_gold', requestKey: key, expectedPrice: 100 }, u.cookie),
+    ),
+  );
+  assert.ok(results.every((r) => r.response.status === 200));
+  let me = (await request('/me', undefined, u.cookie)).data.user;
+  assert.equal(me.coins, 200);
+  assert.equal(me.dots, 0);
+  assert.equal(
+    (await request('/store/buy', { itemId: 'seat_hoa', requestKey: key }, u.cookie)).data.code,
+    'KEY_REUSED',
+  );
+  assert.equal(
+    (await request('/wardrobe/buy', { outfitId: 'saffron', requestKey: key }, u.cookie)).data.code,
+    'KEY_REUSED',
+  );
+  await request('/store/equip', { itemId: 'dots_gold' }, u.cookie);
+  me = (await request('/me', undefined, u.cookie)).data.user;
+  assert.equal(me.cosmetics.dotStyle, 'dots_gold');
+  assert.equal(me.dots, 0);
+  assert.equal((await request('/store/history', undefined, u.cookie)).data.transactions.length, 1);
+  const concurrent = await Promise.all(
+    ['seat_hoa', 'robe_thanh'].map((itemId) =>
+      request('/store/buy', { itemId, requestKey: randomUUID() }, u.cookie),
+    ),
+  );
+  assert.equal(concurrent.filter((r) => r.response.status === 200).length, 1);
+  assert.equal(concurrent.filter((r) => r.data.code === 'INSUFFICIENT_COINS').length, 1);
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 50);
+});
+test('V9 equip is shared with viewers and preserves seats, action timeline, rewards and dot bound', async () => {
+  const u = await fixture();
+  await pool.query('UPDATE users SET coins=20000 WHERE id=$1', [u.id]);
+  await join(u);
+  const before = await instance.room.snapshot(),
+    action = (await request('/actions/incense', { requestKey: randomUUID() }, u.cookie)).data
+      .action;
+  for (const itemId of ['robe_ngoc', 'seat_cuu', 'accessory_book', 'frame_bamboo', 'dots_pearl']) {
+    assert.equal(
+      (await request('/store/buy', { itemId, requestKey: randomUUID() }, u.cookie)).response.status,
+      200,
+    );
+    assert.equal((await request('/store/equip', { itemId }, u.cookie)).response.status, 200);
+  }
+  const after = (await request('/room')).data,
+    player = after.seats.find((s: any) => s.player?.player_id === u.id).player;
+  assert.equal(player.equipped, 'robe_ngoc');
+  assert.equal(player.cosmetics.seat, 'seat_cuu');
+  assert.equal(player.cosmetics.accessory, 'accessory_book');
+  assert.equal(player.dots, 0);
+  assert.deepEqual(
+    after.seats.map((s: any) => [s.id, s.x, s.y, s.scale]),
+    before.seats.map((s: any) => [s.id, s.x, s.y, s.scale]),
+  );
+  assert.equal((await instance.room.myEntry(u.id))?.status, 'ACTIVE');
+  assert.equal(
+    (await instance.room.myAction(u.id))?.ends_at.toISOString(),
+    new Date(action.ends_at).toISOString(),
+  );
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.merit, 0);
+  assert.equal(
+    (await request('/wardrobe/equip', { outfitId: 'seat_cuu' }, u.cookie)).response.status,
+    400,
+  );
+});
+test('V9 draft changes are isolated; delisting keeps ownership and publishing cannot remove owned products', async () => {
+  const u = await fixture(),
+    admin = await fixture('Quản trị', true, 'ADMIN');
+  await join(u);
+  await request('/store/buy', { itemId: 'robe_thanh', requestKey: randomUUID() }, u.cookie);
+  const config = structuredClone(defaultSettings);
+  const item = config.store.products.find((p) => p.id === 'robe_thanh')!;
+  item.enabled = false;
+  item.price = 900;
+  const saved = await instance.cms.save(admin.id, config, null);
+  assert.equal(
+    (await request('/store')).data.products.find((p: any) => p.id === 'robe_thanh').enabled,
+    true,
+  );
+  await instance.cms.publish(admin.id, saved.id);
+  assert.equal(
+    (await request('/store/equip', { itemId: 'robe_thanh' }, u.cookie)).response.status,
+    200,
+  );
+  const newcomer = await fixture();
+  assert.equal(
+    (
+      await request(
+        '/store/buy',
+        { itemId: 'robe_thanh', requestKey: randomUUID() },
+        newcomer.cookie,
+      )
+    ).data.code,
+    'ITEM_UNAVAILABLE',
+  );
+  config.store.products = config.store.products.filter((p) => p.id !== 'robe_thanh');
+  const removed = await instance.cms.save(admin.id, config, null);
+  await assert.rejects(instance.cms.publish(admin.id, removed.id), /ngừng bán/);
+  const priceConfig = structuredClone(defaultSettings);
+  priceConfig.store.products.find((p) => p.id === 'dots_gold')!.price = 120;
+  await pool.query("UPDATE config_revisions SET config=$1 WHERE status='published'", [
+    JSON.stringify(priceConfig),
+  ]);
+  assert.equal(
+    (
+      await request(
+        '/store/buy',
+        { itemId: 'dots_gold', expectedPrice: 100, requestKey: randomUUID() },
+        newcomer.cookie,
+      )
+    ).data.code,
+    'PRICE_CHANGED',
+  );
+  assert.equal((await request('/me', undefined, newcomer.cookie)).data.user.coins, 300);
+});
+test('V9 CMS can customize legacy robes without losing inventory or bypassing sale state', async () => {
+  const u = await fixture(),
+    admin = await fixture('Quản trị', true, 'ADMIN');
+  const config = structuredClone(defaultSettings);
+  const template = config.store.products.find((p) => p.id === 'robe_thanh')!;
+  config.store.products.push({
+    ...template,
+    id: 'saffron',
+    name: 'Nắng ban mai mới',
+    price: 190,
+    enabled: true,
+  });
+  let draft = await instance.cms.save(admin.id, config, null);
+  await instance.cms.publish(admin.id, draft.id);
+  assert.equal(
+    (await request('/store')).data.products.filter((p: any) => p.id === 'saffron').length,
+    1,
+  );
+  assert.equal(
+    (await request('/catalog')).data.outfits.find((p: any) => p.id === 'saffron').price,
+    190,
+  );
+  assert.equal(
+    (await request('/wardrobe/buy', { outfitId: 'saffron', requestKey: randomUUID() }, u.cookie))
+      .response.status,
+    200,
+  );
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 110);
+  config.store.products.find((p) => p.id === 'saffron')!.enabled = false;
+  draft = await instance.cms.save(admin.id, config, null);
+  await instance.cms.publish(admin.id, draft.id);
+  assert.equal(
+    (await request('/store/equip', { itemId: 'saffron' }, u.cookie)).response.status,
+    200,
+  );
+  const other = await fixture();
+  assert.equal(
+    (
+      await request(
+        '/wardrobe/buy',
+        { outfitId: 'saffron', requestKey: randomUUID() },
+        other.cookie,
+      )
+    ).data.code,
+    'ITEM_UNAVAILABLE',
+  );
+});
+
+test('V9 versioned shop images validate actual files, require admin role and are public only after publish', async () => {
+  const admin = await fixture('Quản trị', true, 'ADMIN'),
+    regular = await fixture();
+  const data = execFileSync('ffmpeg', [
+    '-v',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=0x8c9368:s=32x32',
+    '-frames:v',
+    '1',
+    '-threads',
+    '1',
+    '-f',
+    'image2pipe',
+    '-vcodec',
+    'png',
+    'pipe:1',
+  ]).toString('base64');
+  assert.equal(
+    (await request('/admin/store/assets', { data }, regular.cookie)).response.status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        '/admin/store/assets',
+        { data: Buffer.from('<svg/>').toString('base64') },
+        admin.cookie,
+      )
+    ).data.code,
+    'IMAGE_FORMAT',
+  );
+  const asset = await request('/admin/store/assets', { data }, admin.cookie);
+  assert.equal(asset.response.status, 200, JSON.stringify(asset.data));
+  assert.equal(asset.data.width, 32);
+  assert.equal((await fetch(base + '/api/store/assets/' + asset.data.id)).status, 404);
+  const config = structuredClone(defaultSettings);
+  config.store.products.find((p) => p.id === 'seat_hong')!.imageId = asset.data.id;
+  const draft = await instance.cms.save(admin.id, config, null);
+  await instance.cms.publish(admin.id, draft.id);
+  const response = await fetch(base + '/api/store/assets/' + asset.data.id);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.from(data, 'base64'));
+});
+
+test('Thiền Tĩnh V2 CMS mapping and mix are validated, versioned and archived files remain playable for published bindings', async () => {
+  const admin = await fixture('Quản trị âm thanh', true, 'ADMIN'),
+    regular = await fixture();
+  await pool.query(
+    "UPDATE sessions SET admin_until=clock_timestamp()+interval '5 minutes' WHERE user_id=$1",
+    [admin.id],
+  );
+  const { audioMixSchema, v2FileCues } = await import('../server/audio-config.js');
+  const manifest = JSON.parse(
+    await readFile('docs/audio/thien-tinh-v2/audio-manifest.json', 'utf8'),
+  );
+  assert.deepEqual(
+    Object.keys(v2FileCues).toSorted(),
+    manifest.files.map((f: { name: string }) => f.name).toSorted(),
+  );
+  assert.equal(Object.keys(v2FileCues).length, 14);
+  const data = execFileSync('ffmpeg', [
+    '-v',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=220',
+    '-t',
+    '0.2',
+    '-c:a',
+    'libopus',
+    '-f',
+    'ogg',
+    'pipe:1',
+  ]).toString('base64');
+  const asset = await request(
+    '/admin/media/upload',
+    { kind: 'music', title: 'TEST ONLY Opus', data },
+    admin.cookie,
+  );
+  assert.equal(asset.response.status, 200);
+  const config = structuredClone(defaultSettings);
+  config.audio.background = asset.data.id;
+  config.audio.waitingBackground = asset.data.id;
+  config.audioMix = audioMixSchema.parse({});
+  assert.equal(config.audioMix.volumes.templeAmbient, 0.16);
+  assert.equal(config.audioMix.volumes.waitingAmbient, 0.13);
+  assert.equal(config.audioMix.duckFactor, 0.25);
+  const draft = await instance.cms.save(admin.id, config, null);
+  assert.equal((await fetch(base + '/api/media/' + asset.data.id)).status, 404);
+  await instance.cms.publish(admin.id, draft.id);
+  assert.equal((await fetch(base + '/api/media/' + asset.data.id)).status, 200);
+  assert.equal(
+    (await request('/admin/media/archive', { id: asset.data.id, archived: true }, regular.cookie))
+      .response.status,
+    403,
+  );
+  assert.equal(
+    (await request('/admin/media/archive', { id: asset.data.id, archived: true }, admin.cookie))
+      .response.status,
+    200,
+  );
+  assert.equal((await fetch(base + '/api/media/' + asset.data.id)).status, 200);
+  assert.ok(
+    (await request('/admin/media', undefined, admin.cookie)).data.assets.find(
+      (a: any) => a.id === asset.data.id,
+    ).archived_at,
+  );
+  config.audioMix.maxEffects = 3;
+  assert.equal(
+    (await request('/admin/config/draft', { config, expectedId: null }, admin.cookie)).response
+      .status,
+    400,
+  );
+});
+
+test('audio V2 importer validates the complete pack before writes and saves all 14 bindings to a draft only', async () => {
+  const admin = await fixture('Quản trị âm thanh', true, 'ADMIN'),
+    username = 'audio_cli_' + randomUUID().slice(0, 8);
+  await pool.query('UPDATE users SET username=$2 WHERE id=$1', [admin.id, username]);
+  const manifest = JSON.parse(
+    await readFile('docs/audio/thien-tinh-v2/audio-manifest.json', 'utf8'),
+  );
+  const directory = temp + '/v2-pack';
+  await import('node:fs/promises').then((fs) =>
+    fs.mkdir(directory + '/assets', { recursive: true }),
+  );
+  const bytes = execFileSync('ffmpeg', [
+    '-v',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=220',
+    '-t',
+    '0.12',
+    '-c:a',
+    'libopus',
+    '-f',
+    'ogg',
+    'pipe:1',
+  ]);
+  for (const file of manifest.files.slice(0, -1))
+    await writeFile(directory + '/' + file.path, bytes);
+  const target = new URL(process.env.DATABASE_URL!);
+  target.searchParams.set('options', `-c search_path=${schema}`);
+  const run = () =>
+    execFileSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        'scripts/import-audio-v2.ts',
+        '--directory',
+        directory,
+        '--actor',
+        username,
+      ],
+      {
+        env: { ...process.env, DATABASE_URL: target.toString() },
+        encoding: 'utf8',
+        timeout: 30000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+  assert.throws(run);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM media_assets')).rows[0].n, 0);
+  const last = manifest.files.at(-1);
+  await writeFile(directory + '/' + last.path, bytes);
+  const result = JSON.parse(run());
+  assert.equal(result.status, 'draft-saved');
+  assert.equal(result.files, 14);
+  const state = await instance.cms.state();
+  assert.equal(Object.keys(state.draft.config.audio).length, 14);
+  assert.deepEqual(state.published.config.audio, {});
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM media_assets')).rows[0].n, 14);
+});
+
+test('V11 72-seat NPC projection leaves every human seat free and creates no accounts, ledgers or actions', async () => {
+  const { standardSeatLayout } = await import('../server/npc-config.js');
+  const config = {
+    ...structuredClone(defaultSettings),
+    capacity: 72,
+    seatLayout: standardSeatLayout(72),
+  };
+  await pool.query("UPDATE config_revisions SET config=$1 WHERE status='published'", [
+    JSON.stringify(config),
+  ]);
+  for (let n = 0; n < 5; n++) {
+    const r = (await request('/room')).data;
+    assert.equal(r.capacity, 72);
+    assert.equal(r.activeCount, 0);
+    assert.equal(r.npcTargetCount, 72);
+    assert.equal(r.available, 72);
+    assert.equal(r.seats.filter((s: any) => s.player).length, 0);
+  }
+  for (const table of [
+    'users',
+    'sessions',
+    'room_entries',
+    'ritual_actions',
+    'coin_ledger',
+    'merit_transactions',
+    'chat_messages',
+    'live_events',
+  ])
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n, 0, table);
+  const users = await Promise.all(Array.from({ length: 72 }, () => fixture()));
+  for (const target of [1, 36, 72]) {
+    const current = (
+      await pool.query("SELECT count(*)::int AS n FROM room_entries WHERE status='ACTIVE'")
+    ).rows[0].n;
+    await Promise.all(users.slice(current, target).map((u) => join(u)));
+    const r = (await request('/room')).data;
+    assert.equal(r.activeCount, target);
+    assert.equal(r.available, 72 - target);
+    assert.equal(r.npcTargetCount, 72 - target);
+  }
+  assert.equal(
+    new Set(
+      (await pool.query("SELECT seat_id FROM room_entries WHERE status='ACTIVE'")).rows.map(
+        (r) => r.seat_id,
+      ),
+    ).size,
+    72,
+  );
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM users')).rows[0].n, 72);
+});
+test('V11 two humans contest an NPC seat atomically, FIFO owns released seats and service restart preserves human state', async () => {
+  const { standardSeatLayout } = await import('../server/npc-config.js'),
+    { RoomService } = await import('../server/room.js');
+  await pool.query("UPDATE config_revisions SET config=$1 WHERE status='published'", [
+    JSON.stringify({
+      ...structuredClone(defaultSettings),
+      capacity: 72,
+      seatLayout: standardSeatLayout(72),
+    }),
+  ]);
+  const a = await fixture(),
+    b = await fixture();
+  const contested = await Promise.all(
+    [a, b].map((u) => request('/room/join', { seatId: 72, requestKey: randomUUID() }, u.cookie)),
+  );
+  assert.equal(contested.filter((r) => r.response.status === 200).length, 1);
+  assert.equal(contested.filter((r) => r.data.code === 'SLOT_OCCUPIED').length, 1);
+  const more = await Promise.all(Array.from({ length: 71 }, () => fixture()));
+  await Promise.all(more.map((u) => join(u)));
+  const waiting = await fixture(),
+    newcomer = await fixture();
+  assert.equal((await join(waiting)).status, 'WAITING');
+  const entry = (
+    await pool.query("SELECT user_id FROM room_entries WHERE status='ACTIVE' AND seat_id=72")
+  ).rows[0];
+  await instance.room.leave(entry.user_id);
+  assert.equal((await instance.room.myEntry(waiting.id))?.status, 'INVITED');
+  const state = await new RoomService(pool).snapshot();
+  assert.equal(state.activeCount, 71);
+  assert.equal(state.reservedCount, 1);
+  assert.equal(state.available, 0);
+  assert.equal(state.npcTargetCount, 0);
+  assert.equal((await join(newcomer)).status, 'WAITING');
+  await pool.query(
+    "UPDATE room_entries SET expires_at=clock_timestamp()-interval '1 second' WHERE user_id=$1",
+    [waiting.id],
+  );
+  await new RoomService(pool).tick();
+  assert.equal((await instance.room.myEntry(newcomer.id))?.status, 'INVITED');
+  const listener = createServer();
+  listener.listen(0, '127.0.0.1');
+  await new Promise<void>((r) => listener.once('listening', r));
+  const port = (listener.address() as { port: number }).port;
+  await new Promise<void>((r) => listener.close(() => r()));
+  const target = new URL(process.env.DATABASE_URL!);
+  target.searchParams.set('options', `-c search_path=${schema}`);
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
+    env: {
+      ...process.env,
+      DATABASE_URL: target.toString(),
+      PORT: String(port),
+      APP_ORIGIN: origin,
+      NODE_ENV: 'development',
+      RUN_WORKER: '0',
+      REDIS_KEY_PREFIX: prefix,
+      ROOM_EVENT_CHANNEL: prefix + 'restart-events',
+      ADMIN_MFA_KEY_FILE: temp + '/restart-mfa-key',
+      VITE_CACHE_DIR: temp + '/restart-vite-cache',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let diagnostics = '';
+  child.stderr?.on('data', (b) => {
+    diagnostics += b.toString();
+  });
+  try {
+    let restored: any = null;
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null)
+        throw new Error('Restarted API exited: ' + diagnostics.slice(-500));
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/room`, {
+          signal: AbortSignal.timeout(500),
+        });
+        if (r.ok) {
+          restored = await r.json();
+          break;
+        }
+      } catch {
+        /* New process startup is asynchronous. */
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(restored, 'Restarted API did not answer: ' + diagnostics.slice(-500));
+    assert.equal(restored.activeCount, 71);
+    assert.equal(restored.reservedCount, 1);
+    assert.equal(restored.npcTargetCount, 0);
+    assert.equal(restored.available, 0);
+  } finally {
+    if (child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise<void>((r) => child.once('exit', () => r()));
+    }
+  }
+});
+test('V11 CMS exposes NPC modes independently of protected human layout changes', async () => {
+  const { standardSeatLayout } = await import('../server/npc-config.js');
+  const admin = await fixture('Quản trị', true, 'ADMIN'),
+    u = await fixture();
+  await join(u);
+  const config = {
+    ...structuredClone(defaultSettings),
+    npc: { ...defaultSettings.npc, mode: 'off' as const },
+  };
+  let draft = await instance.cms.save(admin.id, config, null);
+  await instance.cms.publish(admin.id, draft.id);
+  assert.equal((await instance.room.snapshot()).npcTargetCount, 0);
+  assert.equal((await instance.room.myEntry(u.id))?.status, 'ACTIVE');
+  config.capacity = 72;
+  config.seatLayout = standardSeatLayout(72);
+  draft = await instance.cms.save(admin.id, config, null);
+  await assert.rejects(instance.cms.publish(admin.id, draft.id), /không còn người giữ chỗ/);
+  await instance.room.leave(u.id);
+  await instance.cms.publish(admin.id, draft.id);
+  assert.equal((await instance.room.snapshot()).capacity, 72);
+});
+
 test('outbox survives service replacement and read-only socket requires same origin', async () => {
   const realtime = await attachRealtime(server, rawRedis, origin);
   const socket = io(base, {

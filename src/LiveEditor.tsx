@@ -43,17 +43,7 @@ export function LiveEditor({
             <option value="onyx">Onyx</option>
           </select>
         </label>
-        <label>
-          Âm lượng nhạc khi có lời chúc
-          <input
-            type="number"
-            min="0"
-            max="1"
-            step=".05"
-            value={value.duckVolume}
-            onChange={(e) => onChange({ ...value, duckVolume: Number(e.target.value) })}
-          />
-        </label>
+        <p>Âm lượng voice và giảm nhạc được quản lý ở phần Âm lượng mặc định và sự kiện.</p>
         <label className="check-label">
           <input
             type="checkbox"

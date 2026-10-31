@@ -1,3 +1,8 @@
+import { ShopAssets } from './shop-assets.js';
+import { StoreService, storeProducts } from './store.js';
+import { starterItems } from './store-config.js';
+import { ChatService } from './chat.js';
+import { EconomyService } from './economy.js';
 import { ExperienceService } from './experience.js';
 import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
@@ -8,7 +13,16 @@ import { Redis } from 'ioredis';
 import argon2 from 'argon2';
 import { z } from 'zod';
 import { type Pool } from 'pg';
-import { ApiError, connectDb, migrate, transaction, roomLock, changed, type Row } from './db.js';
+import {
+  ApiError,
+  getSettings,
+  connectDb,
+  migrate,
+  transaction,
+  roomLock,
+  changed,
+  type Row,
+} from './db.js';
 import {
   AuthService,
   digest,
@@ -21,7 +35,7 @@ import {
 import { RoomService } from './room.js';
 import { CmsService } from './cms.js';
 import { LiveService, MockLiveAdapter, ApprovedWebhookAdapter, liveEventSchema } from './live.js';
-import { catalog } from './catalog.js';
+import { MediaService } from './media.js';
 import { settingsSchema } from './config.js';
 const uuid = z.uuid();
 const command = z.object({ requestKey: uuid }).strict();
@@ -111,6 +125,26 @@ export async function createApp(
     next();
   });
   app.use(
+    ['/api/admin/media/upload', '/api/admin/store/assets'],
+    auth.requireUser,
+    auth.admin('ADMIN'),
+    async (_req, _res, next) => {
+      try {
+        await auth.limit('media:upload', 20, 60);
+        next();
+      } catch (e) {
+        next(e);
+      }
+    },
+    express.json({ limit: '4mb' }),
+  );
+  app.use(
+    '/api/admin/config/draft',
+    auth.requireUser,
+    auth.admin('ADMIN'),
+    express.json({ limit: '128kb' }),
+  );
+  app.use(
     express.json({
       limit: '12kb',
       verify: (req, _res, buffer) => {
@@ -131,7 +165,13 @@ export async function createApp(
     const u = await auth.currentUser(req);
     res.json({ user: u ? await auth.account(u) : null });
   });
-  app.get('/api/catalog', (_req, res) => res.json({ outfits: catalog }));
+  app.get('/api/catalog', async (_req, res) =>
+    res.json({
+      outfits: storeProducts((await getSettings(pool)).config)
+        .filter((p) => ['linen', 'saffron', 'lotus', 'cloud'].includes(p.id))
+        .map((p) => ({ ...p, subtitle: p.description, collection: 'Trang phục V8' })),
+    }),
+  );
   const authRate = async (req: Request, type: string) =>
     auth.limit(
       `${type}:ip:${digest(req.ip ?? 'unknown')}`,
@@ -173,7 +213,13 @@ export async function createApp(
             [id, input.email || null, passwordHash, input.dharmaName, input.username],
           )
         ).rows[0];
-        await tx.query('INSERT INTO inventory VALUES($1,$2)', [id, 'linen']);
+        for (const item of [...starterItems, 'robe_pham'])
+          await tx.query('INSERT INTO inventory VALUES($1,$2) ON CONFLICT DO NOTHING', [id, item]);
+        await tx.query('INSERT INTO coin_ledger(user_id,amount,source) VALUES($1,$2,$3)', [
+          id,
+          result.coins,
+          'opening:' + id,
+        ]);
         return result;
       });
     } catch (e) {
@@ -281,44 +327,63 @@ export async function createApp(
     res.clearCookie(auth.cookieName, auth.cookieOptions);
     res.json({ ok: true });
   });
+  const store = new StoreService(pool),
+    shopAssets = new ShopAssets(pool);
+  app.post('/api/admin/store/assets', auth.requireUser, auth.admin('ADMIN'), async (req, res) => {
+    const { data } = z
+      .object({ data: z.string().max(2100000) })
+      .strict()
+      .parse(req.body);
+    res.json(await shopAssets.upload(user(res).id, data));
+  });
+  app.get(
+    '/api/admin/store/assets/:id',
+    auth.requireUser,
+    auth.admin('ADMIN'),
+    async (req, res) => {
+      const f = await shopAssets.file(uuid.parse(req.params.id));
+      res.type(f.mime).send(f.bytes);
+    },
+  );
+  app.get('/api/store/assets/:id', async (req, res) => {
+    const id = uuid.parse(req.params.id);
+    if (!storeProducts((await getSettings(pool)).config).some((p) => p.imageId === id))
+      throw new ApiError(404, 'IMAGE_MISSING', 'Ảnh chưa xuất bản.');
+    const f = await shopAssets.file(id);
+    res.type(f.mime).setHeader('Cache-Control', 'public,max-age=31536000,immutable');
+    res.send(f.bytes);
+  });
+  app.get('/api/store', async (_req, res) => res.json(await store.catalog()));
+  app.get('/api/store/history', auth.requireUser, async (_req, res) =>
+    res.json({ transactions: await store.history(user(res).id) }),
+  );
+  const account = async (id: string) =>
+    auth.account((await pool.query('SELECT * FROM users WHERE id=$1', [id])).rows[0]);
+  app.post('/api/store/buy', auth.requireUser, async (req, res) => {
+    const i = z
+      .object({
+        itemId: z.string().max(60),
+        requestKey: uuid,
+        expectedPrice: z.number().int().min(0).max(100000).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    await store.buy(user(res).id, i.itemId, i.requestKey, i.expectedPrice);
+    res.json({ user: await account(user(res).id) });
+  });
+  app.post('/api/store/equip', auth.requireUser, async (req, res) => {
+    const i = z
+      .object({ itemId: z.string().max(60) })
+      .strict()
+      .parse(req.body);
+    await store.equip(user(res).id, i.itemId);
+    res.json({ user: await account(user(res).id) });
+  });
   app.post('/api/wardrobe/buy', auth.requireUser, async (req, res) => {
     const input = z.object({ outfitId: z.string(), requestKey: uuid }).strict().parse(req.body);
-    const outfit = catalog.find((o) => o.id === input.outfitId);
+    const outfit = (await getSettings(pool)).config.shop.find((o) => o.id === input.outfitId);
     if (!outfit) throw new ApiError(404, 'OUTFIT_MISSING', 'Không tìm thấy trang phục.');
-    await transaction(pool, async (tx) => {
-      await tx.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [user(res).id]);
-      const previous = (
-        await tx.query('SELECT outfit_id FROM purchases WHERE user_id=$1 AND request_key=$2', [
-          user(res).id,
-          input.requestKey,
-        ])
-      ).rows[0];
-      if (previous && previous.outfit_id !== outfit.id)
-        throw new ApiError(409, 'KEY_REUSED', 'Mã giao dịch đã được dùng.');
-      if (
-        !(
-          await tx.query('SELECT 1 FROM inventory WHERE user_id=$1 AND outfit_id=$2', [
-            user(res).id,
-            outfit.id,
-          ])
-        ).rowCount
-      ) {
-        if (
-          !(
-            await tx.query('UPDATE users SET coins=coins-$1 WHERE id=$2 AND coins>=$1', [
-              outfit.price,
-              user(res).id,
-            ])
-          ).rowCount
-        )
-          throw new ApiError(409, 'INSUFFICIENT_COINS', 'Bạn chưa đủ xu để mua trang phục này.');
-        await tx.query('INSERT INTO inventory VALUES($1,$2)', [user(res).id, outfit.id]);
-        await tx.query(
-          'INSERT INTO purchases(id,user_id,outfit_id,amount,request_key) VALUES($1,$2,$3,$4,$5)',
-          [randomUUID(), user(res).id, outfit.id, outfit.price, input.requestKey],
-        );
-      }
-    });
+    await store.buy(user(res).id, outfit.id, input.requestKey);
     res.json({
       user: await auth.account(
         (await pool.query('SELECT * FROM users WHERE id=$1', [user(res).id])).rows[0],
@@ -334,6 +399,12 @@ export async function createApp(
       .strict()
       .parse(req.body);
     if (
+      !storeProducts((await getSettings(pool)).config).some(
+        (i) => i.category === 'robe' && i.id === outfitId,
+      )
+    )
+      throw new ApiError(400, 'INVALID_ROBE', 'Hãy chọn pháp phục.');
+    if (
       !(
         await pool.query('SELECT 1 FROM inventory WHERE user_id=$1 AND outfit_id=$2', [
           user(res).id,
@@ -344,11 +415,10 @@ export async function createApp(
       throw new ApiError(403, 'OUTFIT_NOT_OWNED', 'Bạn chưa sở hữu trang phục này.');
     await transaction(pool, async (tx) => {
       await roomLock(tx);
-      await tx.query('UPDATE users SET equipped=$1,accessory=$2 WHERE id=$3', [
-        outfitId,
-        accessory,
-        user(res).id,
-      ]);
+      await tx.query(
+        "UPDATE users SET equipped=$1,accessory=$2,cosmetics=jsonb_set(cosmetics,'{accessory}','\"accessory_none\"') WHERE id=$3",
+        [outfitId, accessory, user(res).id],
+      );
       await changed(tx);
     });
     res.json({
@@ -357,12 +427,258 @@ export async function createApp(
       ),
     });
   });
+  const media = new MediaService(pool);
+  app.post('/api/admin/media/upload', auth.requireUser, auth.admin('ADMIN'), async (req, res) => {
+    const i = z
+      .object({
+        kind: z.enum(['voice', 'sfx', 'music']),
+        title: z.string().trim().min(1).max(100),
+        data: z.string().max(3400000),
+      })
+      .strict()
+      .parse(req.body);
+    res.json(await media.upload(user(res).id, i.kind, i.title, i.data));
+  });
+  app.get('/api/admin/media', auth.requireUser, auth.admin('ADMIN'), async (_req, res) =>
+    res.json({
+      assets: (
+        await pool.query(
+          'SELECT id,kind,title,mime,duration_ms,sha256,created_at,archived_at FROM media_assets ORDER BY created_at DESC LIMIT 500',
+        )
+      ).rows,
+    }),
+  );
+  app.post('/api/admin/media/archive', auth.requireUser, auth.admin('ADMIN'), async (req, res) => {
+    const { id, archived } = z.object({ id: uuid, archived: z.boolean() }).strict().parse(req.body);
+    await transaction(pool, async (tx) => {
+      const a = (
+        await tx.query(
+          'UPDATE media_assets SET archived_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END WHERE id=$1 RETURNING id',
+          [id, archived],
+        )
+      ).rows[0];
+      if (!a) throw new ApiError(404, 'MEDIA_MISSING', 'Không tìm thấy bản thu.');
+      await tx.query(
+        "INSERT INTO audit_logs(actor_id,action,after_json) VALUES($1,'media.archive',$2)",
+        [user(res).id, JSON.stringify({ id, archived })],
+      );
+    });
+    res.json({ ok: true });
+  });
+  app.get('/api/admin/media/:id', auth.requireUser, auth.admin('ADMIN'), async (req, res) => {
+    const f = await media.file(uuid.parse(req.params.id));
+    res.type(f.mime).send(f.bytes);
+  });
+  app.get('/api/media/:id', async (req, res) => {
+    const id = uuid.parse(req.params.id),
+      { config } = await getSettings(pool);
+    if (!Object.values(config.audio).includes(id))
+      throw new ApiError(404, 'MEDIA_MISSING', 'Bản thu chưa xuất bản.');
+    const f = await media.file(id);
+    res.setHeader('Cache-Control', 'public,max-age=31536000,immutable');
+    res.type(f.mime).send(f.bytes);
+  });
+  const chat = new ChatService(pool, redis);
+  app.get('/api/chat/me', auth.requireUser, async (_req, res) =>
+    res.json({
+      sanctions: (
+        await pool.query(
+          'SELECT reason,expires_at FROM chat_sanctions WHERE user_id=$1 AND expires_at>clock_timestamp()',
+          [user(res).id],
+        )
+      ).rows,
+      appeals: (
+        await pool.query(
+          'SELECT id,body,status,resolution FROM chat_appeals WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10',
+          [user(res).id],
+        )
+      ).rows,
+    }),
+  );
+  app.post('/api/chat/appeal', auth.requireUser, async (req, res) => {
+    await auth.limit('appeal:' + user(res).id, 3, 86400);
+    const { body } = z
+      .object({ body: z.string().trim().min(5).max(500) })
+      .strict()
+      .parse(req.body);
+    await pool.query('INSERT INTO chat_appeals(id,user_id,body) VALUES($1,$2,$3)', [
+      randomUUID(),
+      user(res).id,
+      body,
+    ]);
+    res.json({ ok: true });
+  });
+  app.get('/api/chat', async (_req, res) =>
+    res.json({
+      messages:
+        (await getSettings(pool)).config.chat.mode === 'disabled' ? [] : await chat.history(),
+    }),
+  );
+  app.post('/api/chat', auth.requireUser, async (req, res) => {
+    await auth.limit(`chat:ip:${digest(req.ip ?? 'unknown')}`, 60, 60);
+    const { body } = z
+      .object({ body: z.string().trim().min(1).max(150) })
+      .strict()
+      .parse(req.body);
+    res.json(await chat.send(user(res).id, body));
+  });
+  app.post('/api/chat/report', auth.requireUser, async (req, res) => {
+    await auth.limit(`chat:report:${user(res).id}`, 10, 3600);
+    const { id, reason } = z
+      .object({ id: uuid, reason: z.string().trim().min(5).max(200) })
+      .strict()
+      .parse(req.body);
+    if (
+      !(await pool.query("SELECT 1 FROM chat_messages WHERE id=$1 AND status='APPROVED'", [id]))
+        .rowCount
+    )
+      throw new ApiError(404, 'CHAT_MISSING', 'Không tìm thấy tin.');
+    await pool.query(
+      'INSERT INTO chat_reports(message_id,reporter_id,reason) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',
+      [id, user(res).id, reason],
+    );
+    res.json({ ok: true });
+  });
+  const moderation = [auth.requireUser, auth.admin('MODERATOR')] as const;
+  app.get('/api/admin/chat/appeals', ...moderation, async (_req, res) =>
+    res.json({
+      appeals: (
+        await pool.query(
+          "SELECT a.*,u.name FROM chat_appeals a JOIN users u ON u.id=a.user_id WHERE a.status='OPEN' ORDER BY a.created_at LIMIT 100",
+        )
+      ).rows,
+    }),
+  );
+  app.post('/api/admin/chat/appeals', ...moderation, async (req, res) => {
+    const i = z
+      .object({ id: uuid, resolution: z.string().trim().min(5).max(500), unmute: z.boolean() })
+      .strict()
+      .parse(req.body);
+    await transaction(pool, async (tx) => {
+      const a = (
+        await tx.query(
+          "UPDATE chat_appeals SET status='RESOLVED',resolution=$2 WHERE id=$1 AND status='OPEN' RETURNING user_id",
+          [i.id, i.resolution],
+        )
+      ).rows[0];
+      if (!a) throw new ApiError(409, 'APPEAL_CHANGED', 'Kháng nghị không còn mở.');
+      if (i.unmute)
+        await tx.query(
+          'UPDATE chat_sanctions SET expires_at=clock_timestamp() WHERE user_id=$1 AND expires_at>clock_timestamp()',
+          [a.user_id],
+        );
+      await tx.query(
+        "INSERT INTO audit_logs(actor_id,action,after_json) VALUES($1,'chat.appeal',$2)",
+        [user(res).id, JSON.stringify(i)],
+      );
+    });
+    res.json({ ok: true });
+  });
+  app.get('/api/admin/chat', ...moderation, async (_req, res) =>
+    res.json({
+      messages: (
+        await pool.query(
+          "SELECT m.*,u.name,(SELECT count(*)::int FROM chat_reports r WHERE r.message_id=m.id) AS reports FROM chat_messages m JOIN users u ON u.id=m.user_id WHERE m.status='PENDING_REVIEW' OR EXISTS(SELECT 1 FROM chat_reports r WHERE r.message_id=m.id) ORDER BY m.created_at DESC LIMIT 100",
+        )
+      ).rows,
+    }),
+  );
+  app.post('/api/admin/chat/moderate', ...moderation, async (req, res) => {
+    const i = z
+      .object({
+        id: uuid,
+        status: z.enum(['APPROVED', 'REJECTED', 'DELETED']),
+        reason: z.string().trim().min(5).max(200),
+      })
+      .strict()
+      .parse(req.body);
+    await chat.moderate(user(res).id, i.id, i.status, i.reason);
+    res.json({ ok: true });
+  });
+  app.post('/api/admin/chat/mute', ...moderation, async (req, res) => {
+    const i = z
+      .object({
+        userId: uuid,
+        minutes: z.union([z.literal(10), z.literal(60), z.literal(1440)]),
+        reason: z.string().trim().min(5).max(200),
+      })
+      .strict()
+      .parse(req.body);
+    await transaction(pool, async (tx) => {
+      await tx.query(
+        "INSERT INTO chat_sanctions(id,user_id,actor_id,reason,expires_at) VALUES($1,$2,$3,$4,clock_timestamp()+$5*interval '1 minute')",
+        [randomUUID(), i.userId, user(res).id, i.reason, i.minutes],
+      );
+      await tx.query(
+        "INSERT INTO audit_logs(actor_id,action,after_json) VALUES($1,'chat.mute',$2)",
+        [user(res).id, JSON.stringify(i)],
+      );
+    });
+    res.json({ ok: true });
+  });
+  const economy = new EconomyService(pool);
+  app.get('/api/journal', auth.requireUser, async (_req, res) =>
+    res.json(await economy.journal(user(res).id)),
+  );
+  app.get('/api/leaderboards', async (req, res) =>
+    res.json(await economy.ranks((await auth.currentUser(req))?.id)),
+  );
+  app.post('/api/wardrobe/dots', auth.requireUser, async (req, res) => {
+    const input = z
+      .object({ pair: z.number().int().min(1).max(4), requestKey: uuid })
+      .strict()
+      .parse(req.body);
+    await economy.buyDots(user(res).id, input.pair, input.requestKey);
+    res.json({
+      user: await auth.account(
+        (await pool.query('SELECT * FROM users WHERE id=$1', [user(res).id])).rows[0],
+      ),
+    });
+  });
+  app.get('/api/prayers', auth.requireUser, async (_req, res) =>
+    res.json({
+      templates: (await getSettings(pool)).config.prayerTemplates,
+      selected:
+        (await pool.query('SELECT template FROM prayers WHERE user_id=$1', [user(res).id])).rows[0]
+          ?.template ?? null,
+    }),
+  );
+  app.post('/api/prayers', auth.requireUser, async (req, res) => {
+    const { template } = z
+      .object({ template: z.string().max(120) })
+      .strict()
+      .parse(req.body);
+    if (!(await getSettings(pool)).config.prayerTemplates.includes(template))
+      throw new ApiError(400, 'PRAYER_TEMPLATE', 'Hãy chọn lời nguyện có sẵn.');
+    await pool.query(
+      'INSERT INTO prayers(user_id,template) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET template=EXCLUDED.template,updated_at=clock_timestamp()',
+      [user(res).id, template],
+    );
+    res.json({ ok: true });
+  });
   app.get('/api/room', async (_req, res) => res.json(await room.snapshot()));
   app.get('/api/room/me', async (req, res) => {
     const current = await auth.currentUser(req);
     res.json({
+      wallet: current ? { coins: current.coins, merit: current.merit, dots: current.dots } : null,
       entry: current ? await room.myEntry(current.id) : null,
       action: current ? await room.myAction(current.id) : null,
+      completedAction: current
+        ? ((
+            await pool.query(
+              "SELECT id,type,ends_at FROM ritual_actions WHERE user_id=$1 AND status='COMPLETED' ORDER BY ends_at DESC,sequence DESC LIMIT 1",
+              [current.id],
+            )
+          ).rows[0] ?? null)
+        : null,
+      coinReward: current
+        ? ((
+            await pool.query(
+              "SELECT id::text,created_at FROM coin_ledger WHERE user_id=$1 AND source LIKE 'minute:%' ORDER BY id DESC LIMIT 1",
+              [current.id],
+            )
+          ).rows[0] ?? null)
+        : null,
     });
   });
   app.get('/api/waitlist/me', auth.requireUser, async (_req, res) =>
@@ -370,7 +686,7 @@ export async function createApp(
   );
   app.post('/api/room/join', auth.requireUser, async (req, res) => {
     const input = command
-      .extend({ seatId: z.number().int().min(1).max(36).optional() })
+      .extend({ seatId: z.number().int().min(1).max(72).optional() })
       .parse(req.body);
     res.json({ entry: await room.join(user(res).id, input.requestKey, input.seatId) });
   });
@@ -441,7 +757,8 @@ export async function createApp(
     if (u.role === 'USER') throw new ApiError(403, 'ACCESS_DENIED', 'Bạn không có quyền quản trị.');
     res.json({
       enrolled: !!u.mfa_last_counter,
-      active: !!u.admin_until && new Date(u.admin_until) > new Date(),
+      required: u.role !== 'ADMIN',
+      active: u.role === 'ADMIN' || (!!u.admin_until && new Date(u.admin_until) > new Date()),
     });
   });
   app.post('/api/admin/mfa/enroll', auth.requireUser, async (_req, res) => {
@@ -636,7 +953,13 @@ export async function createApp(
   });
   app.get('/api/broadcast/audio/:id', broadcast, async (req, res) => {
     const audio = await live.audio(uuid.parse(req.params.id));
-    res.type('audio/mpeg').send(audio);
+    const asset = (
+      await pool.query(
+        'SELECT m.mime FROM tts_jobs j JOIN media_assets m ON m.id=j.asset_id WHERE j.id=$1',
+        [req.params.id],
+      )
+    ).rows[0];
+    res.type(asset?.mime ?? 'audio/mpeg').send(audio);
   });
   app.get('/api/broadcast/state/:id', broadcast, async (req, res) => {
     const job = (

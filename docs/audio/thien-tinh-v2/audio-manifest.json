@@ -1,0 +1,86 @@
+{
+  "name": "Tu Hanh Online — Thien Tinh Audio Pack V2",
+  "version": "2.0",
+  "format": "Ogg Opus",
+  "autoplay": "Start audio only after user gesture; remember mute preference",
+  "files": [
+    {
+      "name": "ambient_chanh_dien_thien_tinh_90s.ogg",
+      "path": "assets/ambient_chanh_dien_thien_tinh_90s.ogg",
+      "role": "loop"
+    },
+    {
+      "name": "ambient_sanh_cho_an_nhien_90s.ogg",
+      "path": "assets/ambient_sanh_cho_an_nhien_90s.ogg",
+      "role": "loop"
+    },
+    {
+      "name": "chuong_chao_nhe.ogg",
+      "path": "assets/chuong_chao_nhe.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "chuong_tinh_tam.ogg",
+      "path": "assets/chuong_tinh_tam.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "dang_huong.ogg",
+      "path": "assets/dang_huong.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "den_luot.ogg",
+      "path": "assets/den_luot.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "lay.ogg",
+      "path": "assets/lay.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "loi_chuc_mo_dau.ogg",
+      "path": "assets/loi_chuc_mo_dau.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "mo_nhe.ogg",
+      "path": "assets/mo_nhe.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "mua_vat_pham.ogg",
+      "path": "assets/mua_vat_pham.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "nhan_ghe.ogg",
+      "path": "assets/nhan_ghe.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "roi_phong.ogg",
+      "path": "assets/roi_phong.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "tich_xu.ogg",
+      "path": "assets/tich_xu.ogg",
+      "role": "effect"
+    },
+    {
+      "name": "vai.ogg",
+      "path": "assets/vai.ogg",
+      "role": "effect"
+    }
+  ],
+  "recommendedVolume": {
+    "templeAmbient": 0.16,
+    "waitingAmbient": 0.13,
+    "ritualEffects": 0.3,
+    "uiEffects": 0.22,
+    "voice": 0.85
+  },
+  "notes": "Loop ambient via crossfade 2 seconds to hide fade boundaries. Never play all audio on server. Sound effects are intentionally soft. No speech or copyrighted chant included."
+}

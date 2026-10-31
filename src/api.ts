@@ -33,9 +33,12 @@ export type User = {
   username: string;
   dharmaName: string;
   hasRecoveryEmail: boolean;
-  role: 'USER' | 'ADMIN' | 'OPERATOR';
+  role: 'USER' | 'ADMIN' | 'OPERATOR' | 'MODERATOR';
   verified: boolean;
   coins: number;
+  merit: number;
+  dots: number;
+  cosmetics: import('../server/store-config').Cosmetics;
   equipped: string;
   accessory: 'none' | 'beads' | 'lotus';
   inventory: string[];

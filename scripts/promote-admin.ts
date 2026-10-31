@@ -14,7 +14,7 @@ try {
       [result.rows[0].id],
     );
   });
-  console.log('Account promoted. Log in and enroll MFA at /admin.');
+  console.log('Account promoted. Log in with your password and open /admin.');
 } finally {
   await pool.end();
 }

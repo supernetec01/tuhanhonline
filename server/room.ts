@@ -1,7 +1,9 @@
+import { selectNpcSeats } from './npc-config.js';
 import { randomUUID } from 'node:crypto';
 import { type Pool } from 'pg';
 import { ApiError, changed, getSettings, roomLock, transaction, type Tx, type Row } from './db.js';
 import { type Settings } from './config.js';
+import { accrueCoins, completeMerit, snapshotRanks } from './economy.js';
 const live = "status IN ('ACTIVE','WAITING','INVITED')";
 export class RoomService {
   constructor(readonly pool: Pool) {}
@@ -19,7 +21,9 @@ export class RoomService {
     return enabled.filter((id) => !occupied.has(id));
   }
   async reconcile(tx: Tx, c: Settings) {
-    let dirty = false;
+    let dirty = await accrueCoins(tx, c);
+    dirty = (await completeMerit(tx, c)) || dirty;
+    await snapshotRanks(tx);
     const expired = await tx.query(
       `UPDATE room_entries SET status='EXPIRED',ended_at=clock_timestamp() WHERE (status IN ('ACTIVE','INVITED') AND expires_at<=clock_timestamp()) OR (status='ACTIVE' AND disconnect_deadline<=clock_timestamp()) RETURNING id`,
     );
@@ -93,7 +97,7 @@ export class RoomService {
         .rows[0];
       const entries = (
         await tx.query(
-          `SELECT e.seat_id,e.status,u.id AS player_id,u.name,u.equipped,u.accessory,a.type AS action,a.started_at,a.ends_at FROM room_entries e JOIN users u ON u.id=e.user_id LEFT JOIN ritual_actions a ON a.entry_id=e.id AND a.status='RUNNING' WHERE e.status IN ('ACTIVE','INVITED')`,
+          `SELECT e.seat_id,e.status,u.id AS player_id,u.name,u.equipped,u.accessory,u.dots,u.cosmetics,a.type AS action,a.started_at,a.ends_at FROM room_entries e JOIN users u ON u.id=e.user_id LEFT JOIN ritual_actions a ON a.entry_id=e.id AND a.status='RUNNING' WHERE e.status IN ('ACTIVE','INVITED')`,
         )
       ).rows;
       const waiting = (
@@ -119,25 +123,37 @@ export class RoomService {
         ).rows[0] ?? null;
       const nextCeremony =
         (await tx.query('SELECT next_at FROM ceremony_clock WHERE id=1')).rows[0]?.next_at ?? null;
+      const seats = config.seatLayout
+        .filter((s) => s.id <= 36 || config.capacity > 36 || enabledIds.some((id) => id > 36))
+        .map((s) => ({
+          ...s,
+          enabled: enabledIds.includes(s.id),
+          code: String.fromCharCode(65 + Math.floor((s.id - 1) / 6)) + (((s.id - 1) % 6) + 1),
+          player: entries.find((e) => e.seat_id === s.id && e.status === 'ACTIVE') ?? null,
+          reserved: entries.some((e) => e.seat_id === s.id && e.status === 'INVITED'),
+        }));
       return {
         effect,
         ceremony,
         nextCeremony,
         ...room,
         configVersion,
-        config,
+        config: { ...config, store: { title: config.store.title, products: [] } },
         capacity,
         occupied: entries.length,
         waiting,
+        waitingPlayers: (
+          await tx.query(
+            "SELECT u.name,u.equipped,u.accessory FROM room_entries e JOIN users u ON u.id=e.user_id WHERE e.status='WAITING' ORDER BY e.sequence LIMIT $1",
+            [config.waitingDisplayLimit],
+          )
+        ).rows,
         available: capacity - entries.length,
         serverTime: new Date().toISOString(),
-        seats: config.seatLayout.map((s) => ({
-          ...s,
-          enabled: enabledIds.includes(s.id),
-          code: String.fromCharCode(65 + Math.floor((s.id - 1) / 6)) + (((s.id - 1) % 6) + 1),
-          player: entries.find((e) => e.seat_id === s.id && e.status === 'ACTIVE') ?? null,
-          reserved: entries.some((e) => e.seat_id === s.id && e.status === 'INVITED'),
-        })),
+        activeCount: entries.filter((e) => e.status === 'ACTIVE').length,
+        reservedCount: entries.filter((e) => e.status === 'INVITED').length,
+        npcTargetCount: selectNpcSeats(seats, config.npc).length,
+        seats,
       };
     });
   }
@@ -196,12 +212,13 @@ export class RoomService {
     await transaction(this.pool, async (tx) => {
       await roomLock(tx);
       const { config } = await getSettings(tx);
+      const beforeDirty = await this.reconcile(tx, config);
       const result = await tx.query(
         `UPDATE room_entries SET status='CANCELLED',ended_at=clock_timestamp() WHERE user_id=$1 AND ${live}`,
         [userId],
       );
       const dirty = await this.reconcile(tx, config);
-      if (result.rowCount || dirty) await changed(tx);
+      if (result.rowCount || dirty || beforeDirty) await changed(tx);
     });
   }
   async accept(userId: string) {
@@ -211,7 +228,7 @@ export class RoomService {
       const dirty = await this.reconcile(tx, config);
       const entry = (
         await tx.query(
-          "UPDATE room_entries SET status='ACTIVE',expires_at=clock_timestamp()+$2*interval '1 minute',disconnect_deadline=clock_timestamp()+$3*interval '1 second' WHERE user_id=$1 AND status='INVITED' RETURNING *",
+          "UPDATE room_entries SET status='ACTIVE',reward_cursor=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 minute',disconnect_deadline=clock_timestamp()+$3*interval '1 second' WHERE user_id=$1 AND status='INVITED' RETURNING *",
           [userId, config.sessionMinutes, config.graceSeconds],
         )
       ).rows[0];
@@ -267,7 +284,7 @@ export class RoomService {
       if (
         (
           await tx.query(
-            "SELECT 1 FROM ritual_actions WHERE user_id=$1 AND type=$2 AND requested_at>clock_timestamp()-$3*interval '1 second'",
+            "SELECT 1 FROM ritual_actions WHERE user_id=$1 AND type=$2 AND started_at>clock_timestamp()-$3*interval '1 second'",
             [userId, type, cooldown],
           )
         ).rowCount
@@ -278,10 +295,10 @@ export class RoomService {
         !!(await tx.query("SELECT 1 FROM ritual_actions WHERE type='incense' AND status='RUNNING'"))
           .rowCount;
       const duration =
-        type === 'bow' ? 2200 : type === 'prostrate' ? 3000 : config.incenseDuration * 1000;
+        type === 'bow' ? 2000 : type === 'prostrate' ? 4000 : config.incenseDuration * 1000;
       const result = (
         await tx.query(
-          `INSERT INTO ritual_actions(id,entry_id,user_id,type,status,duration_ms,cooldown_ms,started_at,ends_at) VALUES($1,$2,$3,$4,$5,$6,$7,CASE WHEN $5='RUNNING' THEN clock_timestamp() END,CASE WHEN $5='RUNNING' THEN clock_timestamp()+$6::integer*interval '1 millisecond' END) RETURNING *`,
+          `INSERT INTO ritual_actions(id,entry_id,user_id,type,status,duration_ms,cooldown_ms,merit_reward,started_at,ends_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $5='RUNNING' THEN clock_timestamp() END,CASE WHEN $5='RUNNING' THEN clock_timestamp()+$6::integer*interval '1 millisecond' END) RETURNING *`,
           [
             randomUUID(),
             entry.id,
@@ -290,6 +307,7 @@ export class RoomService {
             queued ? 'QUEUED' : 'RUNNING',
             duration,
             cooldown * 1000,
+            config.ritualMerit[type as keyof typeof config.ritualMerit],
           ],
         )
       ).rows[0];

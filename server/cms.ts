@@ -1,3 +1,4 @@
+import { storeProducts } from './store.js';
 import { type Pool } from 'pg';
 import { ApiError, transaction, roomLock, getSettings, changed } from './db.js';
 import { settingsSchema, type Settings } from './config.js';
@@ -57,6 +58,47 @@ export class CmsService {
       )
         throw new ApiError(409, 'INVALID_REVISION', 'Phiên bản không còn phù hợp.');
       const config = settingsSchema.parse(candidate.config);
+      for (const id of [
+        ...Object.values(config.audio),
+        ...config.blessings.map((b) => b.audioId).filter(Boolean),
+      ]) {
+        const asset = (
+          await tx.query('SELECT id,kind,duration_ms FROM media_assets WHERE id=$1', [id])
+        ).rows[0];
+        if (
+          !asset ||
+          (config.blessings.some((b) => b.audioId === id) &&
+            (asset.kind !== 'voice' || asset.duration_ms > 10000))
+        )
+          throw new ApiError(
+            400,
+            'MEDIA_INVALID',
+            'Bản thu không tồn tại hoặc voice vượt 10 giây.',
+          );
+      }
+      const products = storeProducts(config),
+        oldProducts = storeProducts(previous.config);
+      for (const old of oldProducts) {
+        const next = products.find((p) => p.id === old.id);
+        if (!next) {
+          if (
+            (await tx.query('SELECT 1 FROM inventory WHERE outfit_id=$1 LIMIT 1', [old.id]))
+              .rowCount
+          )
+            throw new ApiError(
+              409,
+              'ITEM_OWNED',
+              'Vật phẩm đã có người sở hữu: hãy ngừng bán thay vì xóa.',
+            );
+        } else if (next.category !== old.category)
+          throw new ApiError(409, 'ITEM_CATEGORY', 'Không đổi loại của ID vật phẩm đã xuất bản.');
+      }
+      for (const p of products)
+        if (
+          p.imageId &&
+          !(await tx.query('SELECT 1 FROM shop_assets WHERE id=$1', [p.imageId])).rowCount
+        )
+          throw new ApiError(400, 'IMAGE_MISSING', 'Ảnh vật phẩm không tồn tại.');
       const changesSeats =
         config.capacity !== previous.config.capacity ||
         JSON.stringify(config.seatLayout) !==

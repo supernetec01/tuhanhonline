@@ -1,3 +1,7 @@
+import { npcSchema, standardSeatLayout, expandLegacySeats } from './npc-config.js';
+import { audioCues, audioMixSchema } from './audio-config.js';
+import { storeSchema } from './store-config.js';
+import { catalog } from './catalog.js';
 import { z } from 'zod';
 const safeText = (max: number) =>
   z
@@ -37,7 +41,75 @@ export const liveSettingsSchema = z
   .strict();
 export const settingsSchema = z
   .object({
+    npc: npcSchema,
+    store: storeSchema,
     live: liveSettingsSchema.default(() => liveSettingsSchema.parse({})),
+    audio: z.partialRecord(z.enum(audioCues), z.uuid()).default({}),
+    audioMix: audioMixSchema,
+    blessings: z
+      .array(
+        z
+          .object({
+            id: z.string().regex(/^[a-zA-Z0-9_-]{1,60}$/),
+            text: safeText(240),
+            audioId: z.uuid().nullable(),
+          })
+          .strict(),
+      )
+      .max(200)
+      .refine((rows) => new Set(rows.map((r) => r.id)).size === rows.length)
+      .default([]),
+    shop: z
+      .array(
+        z
+          .object({
+            id: z.enum(['linen', 'saffron', 'lotus', 'cloud']),
+            name: safeText(60),
+            subtitle: safeText(120),
+            price: z.number().int().min(0).max(100000),
+            color: z.string().regex(/^#[a-fA-F0-9]{6}$/),
+            accent: z.string().regex(/^#[a-fA-F0-9]{6}$/),
+            collection: safeText(60),
+          })
+          .strict(),
+      )
+      .length(4)
+      .refine((rows) => new Set(rows.map((r) => r.id)).size === 4)
+      .default(catalog.map((o) => ({ ...o, id: o.id as 'linen' | 'saffron' | 'lotus' | 'cloud' }))),
+    chat: z
+      .object({
+        mode: z.enum(['open', 'read-only', 'disabled']).default('open'),
+        rejectedTerms: z.array(safeText(60)).max(100).default(['địt mẹ', 'đụ má']),
+        allowlist: z.array(safeText(150)).max(100).default([]),
+        reviewTerms: z.array(safeText(60)).max(100).default(['tự tử', 'giết']),
+      })
+      .strict()
+      .default(() => ({
+        mode: 'open' as const,
+        rejectedTerms: ['địt mẹ', 'đụ má'],
+        allowlist: [],
+        reviewTerms: ['tự tử', 'giết'],
+      })),
+    dailyCoinCap: z.number().int().min(1).max(1440).default(240),
+    dotPrices: z
+      .array(z.number().int().min(0).max(100000))
+      .length(4)
+      .default([200, 500, 1000, 2000]),
+    ritualMerit: z
+      .object({
+        bow: z.number().int().min(0).max(100),
+        prostrate: z.number().int().min(0).max(100),
+        incense: z.number().int().min(0).max(100),
+      })
+      .strict()
+      .default({ bow: 1, prostrate: 3, incense: 10 }),
+    prayerTemplates: z
+      .array(safeText(120))
+      .min(1)
+      .max(30)
+      .default(['Cầu bình an', 'Cầu sức khỏe', 'Cầu gia đình an vui']),
+    lighting: z.enum(['auto', 'day', 'night']).default('auto'),
+    waitingDisplayLimit: z.number().int().min(0).max(18).default(18),
     title: safeText(60),
     tagline: safeText(120),
     roomName: safeText(60),
@@ -45,12 +117,12 @@ export const settingsSchema = z
       .string()
       .max(200)
       .refine((v) => !/[<>\u0000-\u001f]/.test(v)),
-    capacity: z.number().int().min(1).max(36),
+    capacity: z.number().int().min(1).max(72),
     sessionMinutes: z.number().int().min(5).max(120),
     invitationSeconds: z.number().int().min(15).max(120),
     graceSeconds: z.number().int().min(30).max(300),
     bowCooldown: z.number().int().min(3).max(60),
-    prostrateCooldown: z.number().int().min(5).max(120),
+    prostrateCooldown: z.number().int().min(5).max(600),
     incenseCooldown: z.number().int().min(30).max(600),
     incenseDuration: z.number().int().min(5).max(30),
     actionsEnabled: z.boolean(),
@@ -60,20 +132,28 @@ export const settingsSchema = z
       .array(
         z
           .object({
-            id: z.number().int().min(1).max(36),
+            id: z.number().int().min(1).max(72),
             x: z.number().min(5).max(95),
             y: z.number().min(48).max(94),
-            scale: z.number().min(4).max(12),
+            scale: z.number().min(2).max(12),
             enabled: z.boolean(),
           })
           .strict(),
       )
-      .length(36)
-      .refine((rows) => new Set(rows.map((r) => r.id)).size === 36, 'Cần đủ 36 vị trí khác nhau'),
+      .refine(
+        (rows) =>
+          (rows.length === 36 || rows.length === 72) &&
+          new Set(rows.map((r) => r.id)).size === rows.length &&
+          rows.every((r) => r.id <= rows.length),
+        'Cần đủ ID 1–36 hoặc 1–72',
+      )
+      .transform(expandLegacySeats),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
 export const defaultSettings: Settings = {
+  npc: npcSchema.parse({}),
+  store: storeSchema.parse({}),
   live: liveSettingsSchema.parse({}),
   title: 'Tu Hành Online',
   tagline: 'Một mái chùa nhỏ, một khoảng lặng dành riêng cho bạn.',
@@ -83,22 +163,29 @@ export const defaultSettings: Settings = {
   sessionMinutes: 30,
   invitationSeconds: 60,
   graceSeconds: 120,
-  bowCooldown: 5,
-  prostrateCooldown: 8,
-  incenseCooldown: 180,
-  incenseDuration: 15,
+  audio: {},
+  audioMix: audioMixSchema.parse({}),
+  blessings: [],
+  shop: catalog as Settings['shop'],
+  chat: {
+    allowlist: [],
+    mode: 'open',
+    rejectedTerms: ['địt mẹ', 'đụ má'],
+    reviewTerms: ['tự tử', 'giết'],
+  },
+  dailyCoinCap: 240,
+  dotPrices: [200, 500, 1000, 2000],
+  ritualMerit: { bow: 1, prostrate: 3, incense: 10 },
+  prayerTemplates: ['Cầu bình an', 'Cầu sức khỏe', 'Cầu gia đình an vui'],
+  lighting: 'auto',
+  waitingDisplayLimit: 18,
+  bowCooldown: 60,
+  prostrateCooldown: 180,
+  incenseCooldown: 300,
+  incenseDuration: 5,
   actionsEnabled: true,
   blessing:
     'Cảm ơn {name} đã gửi quà. Chúc bạn và gia đình luôn bình an, mạnh khỏe và tâm hồn thanh thản.',
   ttsInterval: 10,
-  seatLayout: Array.from({ length: 36 }, (_, i) => {
-    const row = Math.floor(i / 6);
-    return {
-      id: i + 1,
-      x: 50 + ([18, 29, 40, 60, 71, 82][i % 6] - 50) * (0.65 + row * 0.08),
-      y: 52.7 + row * 7.5,
-      scale: 5.7 + row * 1.02,
-      enabled: true,
-    };
-  }),
+  seatLayout: standardSeatLayout(36),
 };

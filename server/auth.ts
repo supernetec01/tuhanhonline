@@ -112,6 +112,9 @@ export class AuthService {
       role: u.role,
       verified: !!u.verified_at,
       coins: u.coins,
+      merit: u.merit,
+      dots: u.dots,
+      cosmetics: u.cosmetics,
       equipped: u.equipped,
       accessory: u.accessory,
       inventory: (
@@ -156,14 +159,18 @@ export class AuthService {
       next(e);
     }
   };
-  admin(role: 'ADMIN' | 'OPERATOR' = 'OPERATOR'): RequestHandler {
+  admin(role: 'ADMIN' | 'OPERATOR' | 'MODERATOR' = 'OPERATOR'): RequestHandler {
     return (_req, res, next) => {
       const u = res.locals.user as Row;
-      if (!u || u.role === 'USER' || (role === 'ADMIN' && u.role !== 'ADMIN')) {
+      if (!u || u.role === 'USER' || (u.role !== 'ADMIN' && u.role !== role)) {
         next(new ApiError(403, 'ACCESS_DENIED', 'Bạn không có quyền quản trị.'));
         return;
       }
-      if (!u.admin_until || new Date(u.admin_until).getTime() <= Date.now()) {
+      // ADMIN uses the authenticated password session; delegated roles still require MFA.
+      if (
+        u.role !== 'ADMIN' &&
+        (!u.admin_until || new Date(u.admin_until).getTime() <= Date.now())
+      ) {
         next(new ApiError(403, 'MFA_REQUIRED', 'Vui lòng xác thực hai bước.'));
         return;
       }

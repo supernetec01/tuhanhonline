@@ -1,3 +1,8 @@
+import { TempleAudioManager } from './AudioManager';
+import { AudioControls, useAudioState } from './AudioControls';
+import { StorePanel } from './StorePanel';
+import { type Appearance, type Product } from '../server/store-config';
+import { ChatPanel, ProgressPanel } from './Community';
 import { useEffect, useRef, useState } from 'react';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -21,6 +26,13 @@ import { TempleGame } from './TempleGame';
 import { Experience } from './Experience';
 import { Avatar, Lotus } from './Art';
 type Popup =
+  | 'store'
+  | 'chat'
+  | 'journal'
+  | 'prayers'
+  | 'ranks'
+  | 'dots'
+  | 'find'
   | 'login'
   | 'register'
   | 'account'
@@ -42,20 +54,41 @@ export function GameScreen() {
     [front, setFront] = useState(true),
     [confirmBuy, setConfirmBuy] = useState(false),
     [quiet, setQuiet] = useState(matchMedia('(prefers-reduced-motion: reduce)').matches),
-    [muted, setMuted] = useState(false),
-    [playing, setPlaying] = useState(false),
-    [track, setTrack] = useState(''),
     [now, setNow] = useState(Date.now()),
     [resetToken, setResetToken] = useState('');
-  const temple = useTemple(user),
+  const [inspecting, setInspecting] = useState(false);
+  const inspectBar = useRef<HTMLDivElement>(null);
+  useEffect(() => setInspecting(false), [popup]);
+  const [npcCount, setNpcCount] = useState(0);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [preview, setPreview] = useState<Appearance | null>(null);
+  const [eco, setEco] = useState(false),
+    [find, setFind] = useState('');
+  const [audioManager] = useState(() => new TempleAudioManager());
+  const audioState = useAudioState(audioManager),
+    muted = audioState.muted;
+  useEffect(() => {
+    audioManager.activate();
+    return () => {
+      void audioManager.dispose();
+    };
+  }, [audioManager]);
+  const temple = useTemple(user, popup === 'chat'),
     { room, entry, myAction, connected } = temple;
+  useEffect(() => {
+    if (temple.wallet) setUser((u) => (u ? { ...u, ...temple.wallet } : u));
+  }, [temple.wallet?.coins, temple.wallet?.merit, temple.wallet?.dots]);
+  useEffect(() => {
+    if (room)
+      void api('/store')
+        .then((r) => setProducts(r.products))
+        .catch(() => {});
+  }, [room?.configVersion]);
   const pendingSeat = useRef<number | undefined>(undefined),
     pendingJoin = useRef(false),
     dialog = useRef<HTMLDivElement>(null),
     screen = useRef<HTMLDivElement>(null),
     focusReturn = useRef<HTMLElement | null>(null),
-    audio = useRef<HTMLAudioElement | null>(null),
-    url = useRef(''),
     busyRef = useRef(false),
     proofKey = useRef(crypto.randomUUID()),
     handledLink = useRef(false);
@@ -70,17 +103,22 @@ export function GameScreen() {
         setOutfits(c.outfits);
       })
       .catch(() => setToast('Chưa kết nối được máy chủ. Vui lòng thử tải lại.'));
-    audio.current = new Audio();
-    audio.current.volume = 0.5;
-    return () => {
-      audio.current?.pause();
-      if (url.current) URL.revokeObjectURL(url.current);
-    };
   }, []);
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+  useEffect(() => {
+    if (!user) return;
+    const timer = setInterval(
+      () =>
+        void api('/me')
+          .then((r) => setUser(r.user))
+          .catch(() => {}),
+      15000,
+    );
+    return () => clearInterval(timer);
+  }, [user?.id]);
   useEffect(() => {
     if (!toast) return;
     const id = setTimeout(() => setToast(''), 6000);
@@ -100,13 +138,17 @@ export function GameScreen() {
     if (!focusReturn.current) focusReturn.current = document.activeElement as HTMLElement;
     const timer = setTimeout(
       () =>
-        dialog.current?.querySelector<HTMLElement>('input:not([tabindex="-1"]),button')?.focus(),
+        (inspecting ? inspectBar.current : dialog.current)
+          ?.querySelector<HTMLElement>('input:not([tabindex="-1"]),button')
+          ?.focus(),
       20,
     );
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !busyRef.current) setPopup(null);
       if (e.key === 'Tab') {
-        const list = dialog.current?.querySelectorAll<HTMLElement>(
+        const list = (
+          inspecting ? inspectBar.current : dialog.current
+        )?.querySelectorAll<HTMLElement>(
           'input:not([tabindex="-1"]),button:not(:disabled),a[href]',
         );
         if (!list?.length) return;
@@ -126,7 +168,7 @@ export function GameScreen() {
       clearTimeout(timer);
       window.removeEventListener('keydown', key);
     };
-  }, [popup]);
+  }, [popup, inspecting]);
   useEffect(() => {
     if (handledLink.current) return;
     handledLink.current = true;
@@ -229,10 +271,88 @@ export function GameScreen() {
       }
     });
   }
+  const audioConfig = JSON.stringify(
+    room ? { audio: room.config.audio, mix: room.config.audioMix } : null,
+  );
+  useEffect(() => {
+    if (room) audioManager.configure(room.config.audio, room.config.audioMix);
+  }, [audioConfig]);
+  useEffect(
+    () =>
+      audioManager.setPresence(
+        entry?.status === 'WAITING' || entry?.status === 'INVITED' ? 'waiting' : 'temple',
+      ),
+    [entry?.status],
+  );
+  const priorAudio = useRef<{
+    entry: any;
+    completed: string | null;
+    coin: string | null;
+    initialized: boolean;
+    userId: string | null;
+  }>({ entry: null, completed: null, coin: null, initialized: false, userId: null });
+  useEffect(() => {
+    if (!room) return;
+    if (priorAudio.current.userId !== (user?.id ?? null))
+      priorAudio.current = {
+        entry: null,
+        completed: null,
+        coin: null,
+        initialized: false,
+        userId: user?.id ?? null,
+      };
+    const previous = priorAudio.current;
+    if (
+      entry?.status === 'ACTIVE' &&
+      (previous.entry?.id !== entry.id || previous.entry?.status !== 'ACTIVE')
+    )
+      void audioManager.effect('seat', entry.id);
+    if (entry?.status === 'INVITED' && previous.entry?.status !== 'INVITED')
+      void audioManager.effect('invitation', entry.id);
+    if (!entry && previous.entry?.status === 'ACTIVE')
+      void audioManager.effect('leave', previous.entry.id);
+    if (
+      myAction?.status === 'RUNNING' &&
+      myAction.type !== 'incense' &&
+      new Date(myAction.ends_at).getTime() > Date.now() + (room.clockOffsetMs ?? 0)
+    ) {
+      void audioManager.effect(myAction.type as 'bow' | 'prostrate', myAction.id);
+      void audioManager.effect('woodblock', 'ritual:' + myAction.id);
+    }
+    // Incense is sounded only after a server-confirmed completion, never on queue/start/cancel.
+    if (
+      previous.initialized &&
+      temple.completedAction?.id !== previous.completed &&
+      temple.completedAction?.type === 'incense'
+    )
+      void audioManager.effect('incense', temple.completedAction.id);
+    if (previous.initialized && temple.coinReward?.id !== previous.coin && temple.coinReward)
+      void audioManager.effect('coin', temple.coinReward.id);
+    priorAudio.current = {
+      entry,
+      completed: temple.completedAction?.id ?? null,
+      coin: temple.coinReward?.id ?? null,
+      initialized: true,
+      userId: user?.id ?? null,
+    };
+  }, [
+    entry?.id,
+    entry?.status,
+    myAction?.id,
+    myAction?.status,
+    temple.completedAction?.id,
+    temple.coinReward?.id,
+    !!room,
+    user?.id,
+  ]);
+  useEffect(() => {
+    if (room?.ceremony) void audioManager.effect('meditation', room.ceremony.id);
+  }, [room?.ceremony?.id]);
   async function ritual(type: string) {
     await run(async () => {
       const response = await api(`/actions/${type}`, { requestKey: crypto.randomUUID() });
       if (response.action.status === 'QUEUED') setToast('Đã vào hàng chờ dâng hương.');
+
       await temple.refresh();
     });
   }
@@ -253,6 +373,7 @@ export function GameScreen() {
           : { outfitId: selected, requestKey: proofKey.current },
       );
       setUser(result.user);
+      if (!owned) void audioManager.effect('purchase', proofKey.current);
       setConfirmBuy(false);
       proofKey.current = crypto.randomUUID();
       setToast(owned ? 'Đã mặc trang phục.' : 'Đã thêm áo vào tủ đồ. Chọn mặc để sử dụng.');
@@ -271,8 +392,8 @@ export function GameScreen() {
         </div>
         <div className="game-room-count">
           <span className={connected ? 'live-dot' : 'offline-dot'} />
-          {room?.occupied ?? 0}/{room?.capacity ?? 36} chỗ <span>·</span> {room?.waiting ?? 0} người
-          chờ
+          {room?.activeCount ?? 0}/{room?.capacity ?? 36} người thật <span>·</span> {npcCount} NPC{' '}
+          <span>·</span> {room?.waiting ?? 0} chờ
         </div>
         <div className="game-tools">
           <button
@@ -286,6 +407,13 @@ export function GameScreen() {
             <Shirt size={19} />
             <span>Tủ đồ</span>
           </button>
+          <button onClick={() => setPopup('store')}>Bảo Các</button>
+          <button onClick={() => setPopup('chat')}>Chat</button>
+          <button onClick={() => setPopup('journal')}>Nhật ký</button>
+          <button onClick={() => setPopup('prayers')}>Lời nguyện</button>
+          <button onClick={() => setPopup('ranks')}>Công đức</button>
+          <button onClick={() => setPopup('dots')}>Chấm sáng</button>
+          <button onClick={() => setPopup('find')}>Tìm người</button>
           <button aria-label="Âm thanh" onClick={() => setPopup('audio')}>
             {muted ? <VolumeX size={19} /> : <Volume2 size={19} />}
             <span>Âm thanh</span>
@@ -309,6 +437,18 @@ export function GameScreen() {
         </div>
       </header>
       <main className="game-stage">
+        {(!audioState.unlocked || audioState.needsGesture) && (
+          <button
+            className="sound-start"
+            onClick={() => {
+              void audioManager.unlock().then((ok) => {
+                if (ok) void audioManager.effect('welcome', 'unlock');
+              });
+            }}
+          >
+            Vào chánh điện và bật âm thanh
+          </button>
+        )}
         <div className="game-world">
           <TempleGame
             room={room}
@@ -316,8 +456,64 @@ export function GameScreen() {
             userId={user?.id}
             onSeat={(id) => void chooseSeat(id)}
             quiet={quiet}
+            eco={eco}
+            preview={preview}
+            products={products}
+            onNpcCount={setNpcCount}
+          />
+          <div
+            className="temple-lighting"
+            data-mode={
+              room?.config.lighting === 'auto'
+                ? new Intl.DateTimeFormat('en-GB', {
+                    timeZone: 'Asia/Bangkok',
+                    hour: '2-digit',
+                    hourCycle: 'h23',
+                  }).format(now) >= '18' ||
+                  new Intl.DateTimeFormat('en-GB', {
+                    timeZone: 'Asia/Bangkok',
+                    hour: '2-digit',
+                    hourCycle: 'h23',
+                  }).format(now) < '06'
+                  ? 'night'
+                  : 'day'
+                : room?.config.lighting
+            }
           />
           <Experience room={room} />
+          <div className="npc-disclosure">
+            {room?.status === 'open' ? (room.available ?? 0) : 0} chỗ có thể đăng ký · NPC hệ thống
+            là nhân vật nền, luôn nhường ghế
+          </div>
+          {room && (
+            <aside className="waiting-lobby" aria-label="Sảnh chờ">
+              <strong>Sảnh chờ · {room.waiting} người</strong>
+              <div>
+                {room.waitingPlayers.map((p: any, i: number) => (
+                  <span key={i} title={p.name}>
+                    <Avatar outfitId={p.equipped} accessory={p.accessory} />
+                    <small>{p.name}</small>
+                  </span>
+                ))}
+              </div>
+            </aside>
+          )}
+          {find.trim() &&
+            room?.seats
+              .filter(
+                (s: any) =>
+                  s.player?.name.toLocaleLowerCase('vi').includes(find.toLocaleLowerCase('vi')) &&
+                  find.trim(),
+              )
+              .map((s: any) => (
+                <div
+                  key={s.id}
+                  className="seat-search-highlight"
+                  style={{ left: s.x + '%', top: s.y + '%' }}
+                >
+                  ◉ {s.code} · {s.player!.name}
+                </div>
+              ))}
           <div className="world-motto">
             <span />
             Bình yên trong từng hơi thở
@@ -408,11 +604,23 @@ export function GameScreen() {
       )}
       {popup && (
         <div
-          className="game-scrim"
+          className={`game-scrim ${popup === 'store' && inspecting ? 'store-inspecting' : ''}`}
           onClick={(e) => {
             if (e.currentTarget === e.target && !busy) setPopup(null);
           }}
         >
+          {popup === 'store' && inspecting && (
+            <div
+              ref={inspectBar}
+              className="store-inspect-bar"
+              role="dialog"
+              aria-label="Xem thử tại ghế"
+            >
+              <span>Đang xem thử trên máy bạn</span>
+              <button onClick={() => setInspecting(false)}>Quay lại cửa hàng</button>
+              <button onClick={() => setPopup(null)}>Hủy và đóng</button>
+            </div>
+          )}
           <section
             ref={dialog}
             role="dialog"
@@ -535,6 +743,42 @@ export function GameScreen() {
                 <p className="form-hint">Mật khẩu được băm Argon2id · Chống đăng ký tự động</p>
               </>
             )}
+            {popup === 'store' && (
+              <StorePanel
+                user={user}
+                onUser={setUser}
+                onPurchase={(key) => {
+                  void audioManager.effect('purchase', key);
+                }}
+                onPreview={setPreview}
+                onInspect={() => setInspecting(true)}
+              />
+            )}
+            {popup === 'chat' && <ChatPanel user={user} version={temple.chatVersion} />}
+            {['journal', 'prayers', 'ranks', 'dots'].includes(popup ?? '') && (
+              <ProgressPanel kind={popup!} user={user} onUser={setUser} />
+            )}
+            {popup === 'find' && (
+              <>
+                <h1 id="game-dialog-title">Tìm nhân vật</h1>
+                <label>
+                  Pháp danh
+                  <input value={find} onChange={(e) => setFind(e.target.value)} maxLength={32} />
+                </label>
+                {room?.seats
+                  .filter(
+                    (s: any) =>
+                      find.trim() &&
+                      s.player?.name.toLocaleLowerCase('vi').includes(find.toLocaleLowerCase('vi')),
+                  )
+                  .map((s: any) => (
+                    <p key={s.id}>
+                      {s.player!.name} · Đệm {s.code}
+                    </p>
+                  ))}
+                <button onClick={() => setPopup(null)}>Xem vị trí trên chánh điện</button>
+              </>
+            )}
             {popup === 'queue' && (
               <>
                 <Lotus size={40} />
@@ -599,6 +843,7 @@ export function GameScreen() {
                 <div className="account-avatar">
                   <Avatar
                     front
+                    dots={user.dots}
                     outfitId={user.equipped}
                     accessory={user.accessory}
                     color={outfits.find((o) => o.id === user.equipped)?.color}
@@ -607,7 +852,7 @@ export function GameScreen() {
                 </div>
                 <h1 id="game-dialog-title">{user.dharmaName}</h1>
                 <p>
-                  @{user.username} · {user.coins} xu thử nghiệm
+                  @{user.username} · {user.coins} xu
                 </p>
                 <p className="form-hint">
                   {user.hasRecoveryEmail
@@ -651,6 +896,7 @@ export function GameScreen() {
                   onClick={() =>
                     void run(async () => {
                       await api('/auth/logout', {});
+                      void audioManager.effect('leave', entry?.id ?? 'logout');
                       setUser(null);
                       setPopup(null);
                       setToast('Đã đăng xuất an toàn.');
@@ -666,74 +912,7 @@ export function GameScreen() {
               <>
                 <Lotus size={39} />
                 <h1 id="game-dialog-title">Lắng nghe & tĩnh tâm</h1>
-                <p>
-                  Chưa có bản kinh được cấp phép trong thư viện. Bạn có thể mở bản thu mình có quyền
-                  sử dụng trên thiết bị này.
-                </p>
-                <label>
-                  Chọn bản thu riêng
-                  <input
-                    type="file"
-                    accept="audio/mpeg,audio/ogg,audio/wav"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      if (file.size > 25_000_000) {
-                        setError('Tệp tối đa 25 MB.');
-                        return;
-                      }
-                      audio.current?.pause();
-                      if (url.current) URL.revokeObjectURL(url.current);
-                      url.current = URL.createObjectURL(file);
-                      audio.current!.src = url.current;
-                      audio.current!.loop = true;
-                      setTrack(file.name);
-                      setPlaying(false);
-                    }}
-                  />
-                </label>
-                {track && <p>{track}</p>}
-                <button
-                  className="game-primary"
-                  disabled={!track}
-                  onClick={() => {
-                    if (playing) {
-                      audio.current?.pause();
-                      setPlaying(false);
-                    } else
-                      void audio.current
-                        ?.play()
-                        .then(() => setPlaying(true))
-                        .catch(() => setError('Trình duyệt chưa phát được bản thu này.'));
-                  }}
-                >
-                  {playing ? 'Tạm dừng bản thu' : 'Phát bản thu'}
-                </button>
-                <label>
-                  Âm lượng
-                  <input
-                    aria-label="Âm lượng"
-                    type="range"
-                    min="0"
-                    max="1"
-                    step=".05"
-                    defaultValue={audio.current?.volume ?? 0.5}
-                    onChange={(e) => {
-                      if (audio.current) audio.current.volume = Number(e.target.value);
-                    }}
-                  />
-                </label>
-                <label className="game-check">
-                  <input
-                    type="checkbox"
-                    checked={muted}
-                    onChange={(e) => {
-                      setMuted(e.target.checked);
-                      if (audio.current) audio.current.muted = e.target.checked;
-                    }}
-                  />
-                  Tắt tiếng
-                </label>
+                <AudioControls manager={audioManager} />
                 <label className="game-check">
                   <input
                     type="checkbox"
@@ -742,20 +921,17 @@ export function GameScreen() {
                   />
                   Giảm chuyển động
                 </label>
-                <p className="form-hint">
-                  Bản thu chỉ phát tại máy bạn, không được tải lên máy chủ.
-                </p>
+                <label className="game-check">
+                  <input type="checkbox" checked={eco} onChange={(e) => setEco(e.target.checked)} />
+                  Chế độ tiết kiệm · 20 FPS
+                </label>
               </>
             )}
             {popup === 'wardrobe' && (
               <>
                 <div className="dialog-kicker">MỘT CHÚT RIÊNG, MỘT CHÚT BẠN</div>
                 <h1 id="game-dialog-title">Tủ áo an nhiên</h1>
-                <p>
-                  {user
-                    ? `${user.coins} xu thử nghiệm`
-                    : 'Thử áo miễn phí · Đăng nhập để lưu trang phục'}
-                </p>
+                <p>{user ? `${user.coins} xu` : 'Thử áo miễn phí · Đăng nhập để lưu trang phục'}</p>
                 <div className="wardrobe-room">
                   <div className="robe-preview">
                     <Avatar

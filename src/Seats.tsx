@@ -14,7 +14,7 @@ export function Seats({
   const now = useSceneTime() + (room?.clockOffsetMs ?? 0);
   const phase = ceremonyPhase(room?.ceremony, now);
   return (
-    <div className="seating" aria-label="Sơ đồ 36 chỗ ngồi đồng bộ máy chủ">
+    <div className="seating" aria-label={`Sơ đồ ${room?.capacity ?? 36} chỗ ngồi đồng bộ máy chủ`}>
       {room?.seats.map((seat: any) => {
         const player = seat.player,
           isMe = !!player && !!userId && player.player_id === userId,

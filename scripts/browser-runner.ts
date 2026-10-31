@@ -23,6 +23,7 @@ const childEnv = {
   QUEUE_NAME: queueName,
   ROOM_EVENT_CHANNEL: `events:${schema}`,
   MAIL_OUTBOX_DIR: temp,
+  MEDIA_DIR: temp + '/assets',
   ADMIN_MFA_KEY_FILE: `${temp}/mfa-key`,
   RUN_WORKER: '1',
   MAIL_MODE: 'file',

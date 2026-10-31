@@ -1,3 +1,4 @@
+import { MediaService } from './media.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { type Pool } from 'pg';
@@ -116,17 +117,26 @@ export class LiveService {
             [provider, parsed.liveId, senderKey],
           )
         ).rowCount;
-        if (!merged && config.live.ttsEnabled)
+        if (!merged && config.live.ttsEnabled) {
+          const last = (
+            await tx.query('SELECT text FROM tts_jobs ORDER BY created_at DESC LIMIT 5')
+          ).rows.map((r) => r.text);
+          const choices = config.blessings.filter((b) => !last.includes(b.text));
+          const available = choices.length ? choices : config.blessings;
+          const blessing = available[Math.floor(Math.random() * available.length)];
           await tx.query(
-            'INSERT INTO tts_jobs(id,event_id,text,status,voice) VALUES($1,$2,$3,$4,$5)',
+            'INSERT INTO tts_jobs(id,event_id,text,status,voice,asset_id,mode) VALUES($1,$2,$3,$4,$5,$6,$7)',
             [
               randomUUID(),
               id,
-              config.blessing.replaceAll('{name}', name).slice(0, 400),
+              blessing?.text ?? config.blessing.replaceAll('{name}', name).slice(0, 400),
               pending * config.ttsInterval < 60 ? 'QUEUED' : 'SKIPPED',
               config.live.voice,
+              blessing?.audioId ?? null,
+              blessing && !blessing.audioId ? 'text' : 'mock',
             ],
           );
+        }
         await changed(tx, 'live.gift', {
           id,
           provider,
@@ -170,8 +180,16 @@ export class LiveService {
     });
     if (!job) return;
     try {
-      const provider = process.env.TTS_PROVIDER ?? 'mock';
+      const provider = job.mode === 'text' ? 'mock' : (process.env.TTS_PROVIDER ?? 'mock');
       let file: string | null = null;
+      if (job.asset_id) {
+        await new MediaService(this.pool).file(job.asset_id);
+        await this.pool.query(
+          "UPDATE tts_jobs SET status='READY',mode='static',lease_until=NULL WHERE id=$1 AND status='GENERATING'",
+          [job.id],
+        );
+        return;
+      }
       if (provider === 'openai') {
         if (!process.env.OPENAI_API_KEY) throw new Error('TTS_CREDENTIAL_MISSING');
         const voice = job.voice,
@@ -279,11 +297,13 @@ export class LiveService {
   async audio(jobId: string) {
     const job = (
       await this.pool.query(
-        "SELECT audio_file FROM tts_jobs WHERE id=$1 AND status IN ('READY','PLAYING','COMPLETED')",
+        "SELECT audio_file,asset_id FROM tts_jobs WHERE id=$1 AND status IN ('READY','PLAYING','COMPLETED')",
         [jobId],
       )
     ).rows[0];
-    if (!job?.audio_file) throw new ApiError(404, 'NO_AUDIO', 'Chưa có âm thanh cho lời chúc này.');
+    if (!job?.audio_file && !job?.asset_id)
+      throw new ApiError(404, 'NO_AUDIO', 'Chưa có âm thanh cho lời chúc này.');
+    if (job.asset_id) return (await new MediaService(this.pool).file(job.asset_id)).bytes;
     return readFile(`${process.env.TTS_CACHE_DIR ?? '.data/tts'}/${job.audio_file}`);
   }
 }

@@ -27,22 +27,22 @@ Cùng origin, prefix `/api`; JSON, `Cache-Control: no-store`, `X-Request-Id`. PO
 | POST `/actions/bow`, `/actions/prostrate`, `/actions/incense` | `{requestKey:UUID}`; server quyết định trạng thái/cooldown                       |
 | GET `/live/status`, `/live/recent`                            | Phân biệt mock/bridge sẵn sàng với TikTok thật                                   |
 | POST `/integrations/live/events`                              | Hợp đồng bridge có HMAC; xem LIVE.md, không phải TikTok API chính thức           |
-| GET `/admin/mfa/status`                                       | Cần role ADMIN/OPERATOR                                                          |
+| GET `/admin/mfa/status`                                       | ADMIN: required=false, active=true; OPERATOR/MODERATOR: trạng thái phiên MFA     |
 | POST `/admin/mfa/enroll`, `/admin/mfa/verify`                 | Enrollment riêng; verify `{code}`; mã không dùng lại                             |
-| GET `/admin/dashboard`                                        | Cần role + phiên MFA còn hạn                                                     |
-| GET `/admin/config`, `/admin/audit`                           | Chỉ ADMIN + MFA                                                                  |
+| GET `/admin/dashboard`                                        | ADMIN đã đăng nhập; OPERATOR cần phiên MFA còn hạn                               |
+| GET `/admin/config`, `/admin/audit`                           | Chỉ ADMIN đã đăng nhập; không cần MFA                                            |
 | POST `/admin/config/draft`                                    | `{config,expectedId:string                                                       | null}`; optimistic draft ID                              |
 | POST `/admin/config/publish`, `/admin/config/rollback`        | `{id:string}`; tạo revision mới và outbox                                        |
 | POST `/admin/room/status`                                     | `{status:'open'                                                                  | 'closed'}`; ADMIN, không kick người cũ khi đóng nhận mới |
 | POST `/admin/room/kick`                                       | `{userId,reason}`; ADMIN, có audit                                               |
-| POST `/admin/live/mock`                                       | Sự kiện chuẩn hóa; ADMIN/OPERATOR + MFA, provider luôn mock                      |
-| POST `/admin/tts/skip`                                        | `{id:UUID}`; ADMIN/OPERATOR + MFA                                                |
+| POST `/admin/live/mock`                                       | ADMIN đã đăng nhập hoặc OPERATOR + MFA; provider luôn mock                       |
+| POST `/admin/tts/skip`                                        | `{id:UUID}`; ADMIN đã đăng nhập hoặc OPERATOR + MFA                              |
 | POST `/admin/broadcast/token`                                 | Token scoped 30 phút, khác quyền quản trị                                        |
 | POST `/broadcast/claim`, `/broadcast/complete`                | Header `X-Broadcast-Token`, claim một consumer; complete `{id}`                  |
 | GET `/broadcast/audio/:id`, `/broadcast/state/:id`            | Cùng token broadcast còn hạn                                                     |
 
 Socket.IO chỉ WebSocket, Origin chính xác. Event `temple.event` có `eventId`, `sequence`, `kind`, `payload`, `serverTime`. Outbox có thể giao lại; client không suy diễn trạng thái từ chuỗi event, luôn lấy snapshot khi thông báo/reconnect và có polling dự phòng. Không có socket client-side để sửa ghế/xu hoặc giả quà.
 
-Mở rộng LIVE: GET `/api/admin/live/analytics` (role+MFA), POST `/api/admin/ceremonies/test` (role+MFA, giới hạn 3/phút, audit). Snapshot `/api/room` có `effect`, `ceremony`, `nextCeremony`; `experience.changed` báo đổi trạng thái. Cấu hình `config.live` nằm trong API nháp/xuất bản hiện có: mapping hiệu ứng, giọng, TTS bật/tắt, tên nhân vật, duck volume, lịch bật/tắt và chu kỳ 10–15 phút. Không có endpoint test công khai hoặc việc tự cấp ghế qua sự kiện LIVE.
+Mở rộng LIVE: GET `/api/admin/live/analytics`, POST `/api/admin/ceremonies/test` (ADMIN đã đăng nhập hoặc OPERATOR + MFA; diễn tập giới hạn 3/phút, có audit). Snapshot `/api/room` có `effect`, `ceremony`, `nextCeremony`; `experience.changed` báo đổi trạng thái. Cấu hình `config.live` nằm trong API nháp/xuất bản hiện có: mapping hiệu ứng, giọng, TTS bật/tắt, tên nhân vật, duck volume, lịch bật/tắt và chu kỳ 10–15 phút. Không có endpoint test công khai hoặc việc tự cấp ghế qua sự kiện LIVE.
 
 `room_entries` là bảng canonical duy nhất cho ACTIVE/WAITING/INVITED/hết phiên; partial unique index áp dụng xuyên cả ghế và hàng chờ, tránh lỗi đồng thời ở hai bảng độc lập. INVITED giữ ghế và được tính vào occupancy. Ràng buộc FK/seat range 1..36 và khóa hàng phòng serialize cấp ghế. `commands` lưu idempotency cho join/nghi lễ: replay sau khi đã rời không tạo lượt tham gia mới. Migration SQL có checksum, không sửa migration đã áp dụng.

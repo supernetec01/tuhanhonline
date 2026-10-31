@@ -16,13 +16,21 @@ export async function attachRealtime(server: HttpServer, redis: Redis, origin: s
   subscriber.on('message', (_channel, message) => {
     try {
       const event = JSON.parse(message);
-      io.emit('temple.event', event);
+      io.to(event.kind.startsWith('chat.') ? 'temple:chat' : 'temple:game').emit(
+        'temple.event',
+        event,
+      );
     } catch {
       /* Ignore malformed internal messages. */
     }
   });
   // Read-only event channel: no client event changes seats, currency, gifts or admin settings.
   io.on('connection', (socket) => {
+    socket.join('temple:game');
+    socket.on('chat.subscribe', (enabled) => {
+      if (enabled === true) void socket.join('temple:chat');
+      else void socket.leave('temple:chat');
+    });
     socket.emit('resync.required', { serverTime: new Date().toISOString() });
   });
   return {
