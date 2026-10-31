@@ -217,3 +217,38 @@ test('overlap-add reduces loop-edge discontinuity without altering or interleavi
   relative.setSpeaking(false);
   assert.equal(channel.volume, 0.4);
 });
+
+test('welcome finishes before the first ambient, even when configuration arrives during the cue', async () => {
+  const { manager, context } = fixture();
+  const mix = audioMixSchema.parse({});
+  manager.configure({ background: 'temple', welcome: 'welcome' }, mix);
+  const opening = manager.unlock();
+  await turn();
+  assert.equal(context.sources.length, 1);
+  assert.equal(context.sources[0].loop, false);
+  manager.configure({ background: 'temple', welcome: 'welcome' }, mix);
+  await turn();
+  assert.equal(context.sources.length, 1);
+  context.sources[0].stop();
+  assert.equal(await opening, true);
+  assert.equal(context.sources.filter((s) => s.loop).length, 1);
+  await manager.unlock();
+  assert.equal(context.sources.filter((s) => !s.loop).length, 1);
+  await manager.dispose();
+});
+test('a skipped blessing cancels its opening cue and ignores attempts with an aborted signal', async () => {
+  const { manager, context } = fixture();
+  manager.configure({ blessing: 'opening' }, audioMixSchema.parse({}));
+  await manager.unlock();
+  const controller = new AbortController();
+  const playing = manager.effect('blessing', 'first', true, controller.signal);
+  await turn();
+  assert.equal(context.sources.length, 1);
+  controller.abort();
+  await playing;
+  assert.equal(context.sources[0].stopped, true);
+  assert.equal(manager.state.effects, 0);
+  await manager.effect('blessing', 'second', true, controller.signal);
+  assert.equal(context.sources.length, 1);
+  await manager.dispose();
+});

@@ -438,14 +438,21 @@ export function TempleGame({
                 for (let n = 0; n < count; n++)
                   dots.add(this.add.image(0, 0, 'store-atlas', 'dots_brown'));
               }
+              const dotLayout = r.config.dotLayout;
               dots.list.forEach((o, n) => {
                 const image = o as import('phaser').GameObjects.Image;
                 layerTexture(image, cosmetics.dotStyle, 'dots_brown')
-                  .setPosition(((n % 4) - 1.5) * width * 0.065, Math.floor(n / 4) * width * 0.065)
-                  .setDisplaySize(width * 0.065, width * 0.065);
+                  .setPosition(
+                    (((n % 4) - 1.5) * width * dotLayout.spacing) / 120,
+                    (Math.floor(n / 4) * width * dotLayout.spacing) / 120,
+                  )
+                  .setDisplaySize((width * dotLayout.size) / 120, (width * dotLayout.size) / 120);
               });
               dots
-                .setPosition(x, y - width * 0.95 * sy)
+                .setPosition(
+                  x + ((dotLayout.x - 60) * width) / 120,
+                  y - ((width * (140 - dotLayout.y)) / 120) * sy,
+                )
                 .setDepth(y + 2)
                 .setAlpha(humanAlpha);
               let name = this.names.get(seat.id);

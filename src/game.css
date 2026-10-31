@@ -1204,3 +1204,51 @@ body:has(.single-game) {
     flex-basis: 100%;
   }
 }
+.altar-decorations {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.altar-smoke {
+  animation: altar-drift 6s ease-in-out infinite;
+}
+@keyframes altar-drift {
+  50% {
+    opacity: 0.12;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .altar-smoke {
+    animation: none;
+  }
+}
+.appearance-dot-overlay {
+  position: absolute;
+  inset: 0 0 20px;
+  z-index: 4;
+  pointer-events: none;
+}
+.admin-dot-layout-preview {
+  width: 120px;
+  height: 140px;
+}
+
+.broadcast-controls label:not(.game-check):not(.check-label) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+}
+.broadcast-controls input[type='range'] {
+  width: 100%;
+}
+.broadcast-controls .game-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}

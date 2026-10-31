@@ -1,3 +1,4 @@
+import { type Settings } from '../server/config';
 import { useEffect, useRef, useState } from 'react';
 import { api, type User } from './api';
 import { AppearancePreview, ProductArt } from './StoreArt';
@@ -10,11 +11,13 @@ import {
 } from '../server/store-config';
 export function StorePanel({
   user,
+  dotLayout,
   onUser,
   onPreview,
   onInspect,
   onPurchase,
 }: {
+  dotLayout?: Settings['dotLayout'];
   user: User | null;
   onUser: (u: User) => void;
   onPreview: (p: Appearance | null) => void;
@@ -157,6 +160,7 @@ export function StorePanel({
         <div className="store-layout">
           <aside>
             <AppearancePreview
+              dotLayout={dotLayout}
               appearance={appearance}
               products={catalog.products}
               dots={user?.dots ?? 0}

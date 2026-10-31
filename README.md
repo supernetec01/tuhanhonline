@@ -1,3 +1,5 @@
+> Cập nhật tiếp trên main V11: [xu/phút lẻ, đồ lễ, bố trí chấm và âm thanh](docs/ECONOMY_AUDIO_FOLLOWUP.md). Bộ ZIP âm thanh gốc vẫn cần được cung cấp để gán/nghe thử.
+
 # Tu Hành Online
 
 Game **Phaser 2D** mở trực tiếp trên `/`, tài khoản **username + pháp danh + mật khẩu**, email khôi phục tùy chọn; với **36 chỗ thật, FIFO, nghi lễ do server quản lý**, tủ áo nhiều lớp, khôi phục mật khẩu qua email tùy chọn, Admin dùng phiên đăng nhập mật khẩu và tương tác LIVE mô phỏng.

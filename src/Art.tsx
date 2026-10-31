@@ -28,6 +28,7 @@ export function Avatar({
   outfitId = 'linen',
   accessory = 'none',
   dots = 0,
+  dotLayout,
   design,
   hideShadow = false,
   durationMs,
@@ -41,6 +42,7 @@ export function Avatar({
   outfitId?: string;
   accessory?: string;
   dots?: number;
+  dotLayout?: { x: number; y: number; size: number; spacing: number };
   design?: string;
   hideShadow?: boolean;
   durationMs?: number;
@@ -177,9 +179,9 @@ export function Avatar({
         {Array.from({ length: Math.max(0, Math.min(8, dots)) }, (_, i) => (
           <circle
             key={i}
-            cx={48 + (i % 4) * 8}
-            cy={28 + Math.floor(i / 4) * 8}
-            r="2.5"
+            cx={(dotLayout?.x ?? 60) + ((i % 4) - 1.5) * (dotLayout?.spacing ?? 8)}
+            cy={(dotLayout?.y ?? 28) + Math.floor(i / 4) * (dotLayout?.spacing ?? 8)}
+            r={dotLayout ? (dotLayout.size * 17) / 48 : 2.5}
             fill="#fff0af"
           />
         ))}

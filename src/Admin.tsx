@@ -1,3 +1,4 @@
+import { AltarDecorations } from './AltarDecorations';
 import { NpcEditor } from './NpcEditor';
 import { legacyProducts } from '../server/store-config';
 import { StoreEditor } from './StoreEditor';
@@ -7,7 +8,7 @@ import { LiveEditor } from './LiveEditor';
 import { useEffect, useState } from 'react';
 import { api, type User } from './api';
 import { type Settings } from '../server/config';
-import { Lotus, TempleArt } from './Art';
+import { Avatar, Lotus, TempleArt } from './Art';
 export function Admin() {
   const [user, setUser] = useState<User | null>(null),
     [mfa, setMfa] = useState<any>(null),
@@ -69,7 +70,7 @@ export function Admin() {
   }
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
     if (config) {
-      setConfig({ ...config, [key]: value });
+      setConfig((previous) => (previous ? { ...previous, [key]: value } : previous));
       setDirty(true);
     }
   }
@@ -306,6 +307,7 @@ export function Admin() {
                   }}
                 >
                   <TempleArt />
+                  <AltarDecorations config={config.decorations} portraitMode={false} />
                   {config.seatLayout.map((s) => (
                     <button
                       key={s.id}
@@ -467,6 +469,80 @@ export function Admin() {
                     <option value="night">Đêm</option>
                   </select>
                 </label>
+                {(['fruit', 'cakes', 'lotus', 'censer', 'donationBox'] as const).map((key, i) => (
+                  <label key={key} className="check-label">
+                    <input
+                      type="checkbox"
+                      checked={config.decorations[key]}
+                      onChange={(e) =>
+                        update('decorations', { ...config.decorations, [key]: e.target.checked })
+                      }
+                    />
+                    {
+                      [
+                        'Mâm ngũ quả',
+                        'Bánh lễ',
+                        'Hoa sen bàn thờ',
+                        'Lư hương & khói',
+                        'Thùng công đức (trang trí)',
+                      ][i]
+                    }
+                  </label>
+                ))}
+                {(
+                  [
+                    ['offsetX', 'Đồ lễ: dịch ngang', -4, 4, 0.1],
+                    ['offsetY', 'Đồ lễ: dịch dọc', -3, 3, 0.1],
+                    ['scale', 'Đồ lễ: tỉ lệ', 0.7, 1.3, 0.05],
+                  ] as const
+                ).map(([key, label, min, max, step]) => (
+                  <label key={key}>
+                    {label}
+                    <input
+                      type="number"
+                      min={min}
+                      max={max}
+                      step={step}
+                      value={config.decorations[key]}
+                      onChange={(e) =>
+                        update('decorations', {
+                          ...config.decorations,
+                          [key]: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                ))}
+                <div className="wide">
+                  <Avatar
+                    front
+                    dots={8}
+                    dotLayout={config.dotLayout}
+                    className="admin-dot-layout-preview"
+                  />
+                </div>
+                {(
+                  [
+                    ['x', 'Chấm: vị trí ngang', 40, 80],
+                    ['y', 'Chấm: vị trí dọc', 8, 38],
+                    ['size', 'Chấm: kích thước', 3, 12],
+                    ['spacing', 'Chấm: khoảng cách', 4, 14],
+                  ] as const
+                ).map(([key, label, min, max]) => (
+                  <label key={key}>
+                    {label}
+                    <input
+                      type="number"
+                      min={min}
+                      max={max}
+                      step=".1"
+                      value={config.dotLayout[key]}
+                      onChange={(e) =>
+                        update('dotLayout', { ...config.dotLayout, [key]: Number(e.target.value) })
+                      }
+                    />
+                  </label>
+                ))}
                 {config.dotPrices.map((price, i) => (
                   <label key={i}>
                     Giá cặp chấm {i + 1}
@@ -523,6 +599,7 @@ export function Admin() {
                 }}
               />
               <StoreEditor
+                dotLayout={config.dotLayout}
                 value={config.store}
                 legacy={legacyProducts(config.shop)}
                 onChange={(value) => update('store', value)}

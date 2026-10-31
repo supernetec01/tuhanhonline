@@ -5,9 +5,11 @@ import { type Product, productSchema, tierNames } from '../server/store-config';
 import { ProductArt, AppearancePreview } from './StoreArt';
 export function StoreEditor({
   value,
+  dotLayout,
   onChange,
   legacy,
 }: {
+  dotLayout?: Settings['dotLayout'];
   value: Settings['store'];
   legacy: Product[];
   onChange: (v: Settings['store']) => void;
@@ -176,6 +178,7 @@ export function StoreEditor({
       <button onClick={() => setPreview(!preview)}>Xem trước bản đang sửa</button>
       {preview && (
         <AppearancePreview
+          dotLayout={dotLayout}
           appearance={{
             robe: item.category === 'robe' ? item.id : 'robe_pham',
             cosmetics: {

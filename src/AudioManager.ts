@@ -57,6 +57,8 @@ export class TempleAudioManager {
   private pendingEffects = 0;
   private seen = new Set<string>();
   private recent = new Map<AudioCue, number>();
+  private welcoming = false;
+  private welcomed = false;
   private speaking = false;
   private error = '';
   private disposed = false;
@@ -147,6 +149,16 @@ export class TempleAudioManager {
       this.unlocked = true;
       this.paused = false;
       this.error = '';
+      if (!this.welcomed) {
+        this.welcomed = true;
+        this.welcoming = true;
+        try {
+          await this.effect('welcome', 'unlock', true);
+        } finally {
+          this.welcoming = false;
+        }
+      }
+      if (this.disposed || !this.ctx) return false;
       await this.syncAmbient();
       this.emit();
       return true;
@@ -239,6 +251,7 @@ export class TempleAudioManager {
     this.ambientSources.delete(voice);
   }
   private async syncAmbient() {
+    if (this.welcoming) return;
     const url =
       this.custom?.url ??
       (this.url(this.desired === 'waiting' ? 'waitingBackground' : 'background') ||
@@ -306,7 +319,8 @@ export class TempleAudioManager {
       this.emit();
     }
   }
-  async effect(cue: AudioCue, eventId: string, waitForEnd = false) {
+  async effect(cue: AudioCue, eventId: string, waitForEnd = false, signal?: AbortSignal) {
+    if (signal?.aborted) return;
     const key = cue + ':' + eventId;
     if (this.seen.has(key)) return;
     this.seen.add(key);
@@ -327,7 +341,7 @@ export class TempleAudioManager {
     this.pendingEffects++;
     try {
       const buffer = await this.buffer(url);
-      if (this.disposed || this.muted) return;
+      if (this.disposed || this.muted || signal?.aborted) return;
       const source = this.ctx.createBufferSource(),
         gain = this.ctx.createGain();
       source.buffer = buffer;
@@ -346,7 +360,15 @@ export class TempleAudioManager {
         resolveEnd = r;
       });
       let stopTimer: ReturnType<typeof setTimeout> | undefined;
+      const cancel = () => {
+        try {
+          source.stop();
+        } catch {
+          resolveEnd();
+        }
+      };
       source.onended = () => {
+        signal?.removeEventListener('abort', cancel);
         if (stopTimer) clearTimeout(stopTimer);
         resolveEnd();
         this.effects.delete(voice);
@@ -354,6 +376,7 @@ export class TempleAudioManager {
         gain.disconnect();
         this.emit();
       };
+      signal?.addEventListener('abort', cancel, { once: true });
       source.start();
       this.emit();
       if (waitForEnd) {

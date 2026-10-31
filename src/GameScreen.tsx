@@ -1,3 +1,4 @@
+import { AltarDecorations } from './AltarDecorations';
 import { TempleAudioManager } from './AudioManager';
 import { AudioControls, useAudioState } from './AudioControls';
 import { StorePanel } from './StorePanel';
@@ -441,9 +442,7 @@ export function GameScreen() {
           <button
             className="sound-start"
             onClick={() => {
-              void audioManager.unlock().then((ok) => {
-                if (ok) void audioManager.effect('welcome', 'unlock');
-              });
+              void audioManager.unlock();
             }}
           >
             Vào chánh điện và bật âm thanh
@@ -480,6 +479,7 @@ export function GameScreen() {
                 : room?.config.lighting
             }
           />
+          {room && <AltarDecorations config={room.config.decorations} />}
           <Experience room={room} />
           <div className="npc-disclosure">
             {room?.status === 'open' ? (room.available ?? 0) : 0} chỗ có thể đăng ký · NPC hệ thống
@@ -745,6 +745,7 @@ export function GameScreen() {
             )}
             {popup === 'store' && (
               <StorePanel
+                dotLayout={room?.config.dotLayout}
                 user={user}
                 onUser={setUser}
                 onPurchase={(key) => {
@@ -844,6 +845,7 @@ export function GameScreen() {
                   <Avatar
                     front
                     dots={user.dots}
+                    dotLayout={room?.config.dotLayout}
                     outfitId={user.equipped}
                     accessory={user.accessory}
                     color={outfits.find((o) => o.id === user.equipped)?.color}

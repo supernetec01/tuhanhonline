@@ -1,4 +1,5 @@
 import { storeProducts } from './store.js';
+import { accrueCoins } from './economy.js';
 import { type Pool } from 'pg';
 import { ApiError, transaction, roomLock, getSettings, changed } from './db.js';
 import { settingsSchema, type Settings } from './config.js';
@@ -99,6 +100,7 @@ export class CmsService {
           !(await tx.query('SELECT 1 FROM shop_assets WHERE id=$1', [p.imageId])).rowCount
         )
           throw new ApiError(400, 'IMAGE_MISSING', 'Ảnh vật phẩm không tồn tại.');
+      await accrueCoins(tx, previous.config, true);
       const changesSeats =
         config.capacity !== previous.config.capacity ||
         JSON.stringify(config.seatLayout) !==

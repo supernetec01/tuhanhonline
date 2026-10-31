@@ -212,13 +212,14 @@ export class RoomService {
     await transaction(this.pool, async (tx) => {
       await roomLock(tx);
       const { config } = await getSettings(tx);
+      const earned = await accrueCoins(tx, config, true);
       const beforeDirty = await this.reconcile(tx, config);
       const result = await tx.query(
         `UPDATE room_entries SET status='CANCELLED',ended_at=clock_timestamp() WHERE user_id=$1 AND ${live}`,
         [userId],
       );
       const dirty = await this.reconcile(tx, config);
-      if (result.rowCount || dirty || beforeDirty) await changed(tx);
+      if (result.rowCount || dirty || beforeDirty || earned) await changed(tx);
     });
   }
   async accept(userId: string) {
@@ -238,12 +239,18 @@ export class RoomService {
     });
   }
   async heartbeat(userId: string) {
-    const { config } = await getSettings(this.pool);
-    await this.pool.query(
-      "UPDATE room_entries SET disconnect_deadline=clock_timestamp()+$2*interval '1 second' WHERE user_id=$1 AND status='ACTIVE' AND expires_at>clock_timestamp() AND disconnect_deadline>clock_timestamp()",
-      [userId, config.graceSeconds],
-    );
+    await transaction(this.pool, async (tx) => {
+      await roomLock(tx);
+      const { config } = await getSettings(tx);
+      const minted = await accrueCoins(tx, config, true);
+      await tx.query(
+        "UPDATE room_entries SET disconnect_deadline=clock_timestamp()+$2*interval '1 second' WHERE user_id=$1 AND status='ACTIVE' AND expires_at>clock_timestamp() AND disconnect_deadline>clock_timestamp()",
+        [userId, config.graceSeconds],
+      );
+      if (minted) await changed(tx, 'wallet.updated');
+    });
   }
+
   async action(userId: string, type: string, key: string) {
     return transaction(this.pool, async (tx) => {
       await roomLock(tx);

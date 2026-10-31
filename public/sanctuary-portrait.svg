@@ -50,7 +50,7 @@
 </g>
 <path d="M495 422H905L947 461H453Z" fill="#33231e" stroke="#83643c" stroke-width="2"/><path d="M453 462H947V483H453Z" fill="#261d1b" stroke="#76603b"/>
 <rect x="503" y="408" width="394" height="32" rx="2" fill="#3a211b" stroke="#9c7540"/><path d="M492 405H908V414H492Z" fill="url(#gold)"/>
-<g stroke="#ba9858" fill="#4a3524"><path d="M688 398H712L708 411H692Z"/><path d="M693 398V374M700 399V369M707 398V374" stroke-width="2"/></g>
+
 <g fill="#c5b484" stroke="#a18a57"><path d="M549 389H568L565 408H552Z"/><path d="M832 389H851L848 408H835Z"/></g>
 <g fill="#daae5d"><path d="M556 389V368H562V389ZM838 389V368H844V389Z"/><path d="M559 369Q551 359 559 349Q568 359 559 369ZM841 369Q833 359 841 349Q850 359 841 369Z" fill="#ffdf92"/></g>
 <g fill="#ffdb85" opacity=".35" filter="url(#glow)"><circle cx="559" cy="360" r="12"/><circle cx="841" cy="360" r="12"/></g>

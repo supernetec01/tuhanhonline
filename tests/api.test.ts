@@ -1812,6 +1812,73 @@ test('V11 CMS exposes NPC modes independently of protected human layout changes'
   assert.equal((await instance.room.snapshot()).capacity, 72);
 });
 
+async function rewardElapsed(id: string, seconds: number) {
+  await pool.query(
+    "UPDATE room_entries SET reward_cursor=clock_timestamp()-$2*interval '1 second',expires_at=clock_timestamp()+interval '5 minutes',disconnect_deadline=clock_timestamp()+interval '5 minutes' WHERE user_id=$1 AND status='ACTIVE'",
+    [id, seconds],
+  );
+}
+test('valid partial minutes survive leaving and reconnect expiry; concurrent ticks do not duplicate rewards', async () => {
+  const u = await fixture();
+  await join(u);
+  await rewardElapsed(u.id, 45);
+  await instance.room.leave(u.id);
+  await join(u);
+  await rewardElapsed(u.id, 20);
+  await Promise.all(Array.from({ length: 6 }, () => instance.room.tick()));
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 301);
+  await pool.query(
+    "UPDATE room_entries SET reward_cursor=clock_timestamp()-interval '90 seconds',disconnect_deadline=clock_timestamp()-interval '70 seconds' WHERE user_id=$1 AND status='ACTIVE'",
+    [u.id],
+  );
+  await instance.room.heartbeat(u.id);
+  await instance.room.tick();
+  assert.equal(await instance.room.myEntry(u.id), null);
+  await join(u);
+  await rewardElapsed(u.id, 36);
+  await instance.room.tick();
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 302);
+});
+test('reward accounting splits at Vietnam midnight and preserves daily limits after worker downtime', async () => {
+  const u = await fixture();
+  await join(u);
+  await pool.query(
+    `UPDATE room_entries SET reward_cursor=(date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Ho_Chi_Minh') AT TIME ZONE 'Asia/Ho_Chi_Minh')-interval '1 day'-interval '60 seconds',expires_at=(date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Ho_Chi_Minh') AT TIME ZONE 'Asia/Ho_Chi_Minh')-interval '1 day'+interval '60 seconds',disconnect_deadline=(date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Ho_Chi_Minh') AT TIME ZONE 'Asia/Ho_Chi_Minh')-interval '1 day'+interval '60 seconds' WHERE user_id=$1`,
+    [u.id],
+  );
+  await instance.room.tick();
+  await instance.room.tick();
+  assert.equal((await request('/me', undefined, u.cookie)).data.user.coins, 302);
+  const days = (
+    await pool.query(
+      "SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date,count(*)::int AS n FROM coin_ledger WHERE user_id=$1 AND source LIKE 'minute:%' GROUP BY 1",
+      [u.id],
+    )
+  ).rows;
+  assert.equal(days.length, 2);
+  assert.ok(days.every((r) => r.n === 1));
+});
+test('publishing a lower coin cap settles the old policy first; decorations and dot positions use revisions', async () => {
+  const admin = await fixture('Quản trị', true, 'ADMIN');
+  await join(admin);
+  await rewardElapsed(admin.id, 125);
+  const config = structuredClone(defaultSettings);
+  config.dailyCoinCap = 1;
+  config.decorations.fruit = false;
+  config.dotLayout.size = 10;
+  const draft = await instance.cms.save(admin.id, config, null);
+  assert.equal((await instance.room.snapshot()).config.decorations.fruit, true);
+  await instance.cms.publish(admin.id, draft.id);
+  assert.equal((await request('/me', undefined, admin.cookie)).data.user.coins, 302);
+  const room = await instance.room.snapshot();
+  assert.equal(room.config.decorations.fruit, false);
+  assert.equal(room.config.dotLayout.size, 10);
+  assert.equal(room.capacity, 36);
+  await rewardElapsed(admin.id, 125);
+  await instance.room.tick();
+  assert.equal((await request('/me', undefined, admin.cookie)).data.user.coins, 302);
+});
+
 test('outbox survives service replacement and read-only socket requires same origin', async () => {
   const realtime = await attachRealtime(server, rawRedis, origin);
   const socket = io(base, {

@@ -21,36 +21,47 @@ export function useTemple(user: User | null, chatOpen = false) {
   }, [chatOpen]);
   const chatOpenRef = useRef(chatOpen);
   chatOpenRef.current = chatOpen;
-  const inFlight = useRef(-1),
+  const inFlight = useRef<{ gen: number; promise: Promise<void> } | null>(null),
     generation = useRef(0),
     seenGift = useRef(new Set<string>());
   const refresh = useCallback(async () => {
     const gen = generation.current;
-    if (inFlight.current === gen) return;
-    inFlight.current = gen;
-    try {
-      const [snapshot, me] = await Promise.all([
-        api('/room'),
-        user ? api('/room/me') : Promise.resolve({ entry: null, action: null }),
-      ]);
-      if (gen !== generation.current) return;
-      setRoom({ ...snapshot, clockOffsetMs: new Date(snapshot.serverTime).getTime() - Date.now() });
-      setEntry(me.entry);
-      setMyAction(me.action);
-      setCompletedAction(me.completedAction ?? null);
-      setCoinReward(me.coinReward ?? null);
-      setWallet(me.wallet ?? null);
-      setConnected(true);
-    } catch (e) {
-      if (gen === generation.current) {
-        setConnected(false);
-        if ((e as any).status === 401) {
-          setEntry(null);
-          setMyAction(null);
+    const pending = inFlight.current;
+    if (pending?.gen === gen) await pending.promise;
+    if (gen !== generation.current) return;
+    if (inFlight.current?.gen === gen) return inFlight.current.promise;
+    const promise = (async () => {
+      try {
+        const [snapshot, me] = await Promise.all([
+          api('/room'),
+          user ? api('/room/me') : Promise.resolve({ entry: null, action: null }),
+        ]);
+        if (gen !== generation.current) return;
+        setRoom({
+          ...snapshot,
+          clockOffsetMs: new Date(snapshot.serverTime).getTime() - Date.now(),
+        });
+        setEntry(me.entry);
+        setMyAction(me.action);
+        setCompletedAction(me.completedAction ?? null);
+        setCoinReward(me.coinReward ?? null);
+        setWallet(me.wallet ?? null);
+        setConnected(true);
+      } catch (e) {
+        if (gen === generation.current) {
+          setConnected(false);
+          if ((e as any).status === 401) {
+            setEntry(null);
+            setMyAction(null);
+          }
         }
       }
+    })();
+    inFlight.current = { gen, promise };
+    try {
+      await promise;
     } finally {
-      if (inFlight.current === gen) inFlight.current = -1;
+      if (inFlight.current?.promise === promise) inFlight.current = null;
     }
   }, [user?.id]);
   const refreshRef = useRef(refresh),

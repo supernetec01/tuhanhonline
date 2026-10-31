@@ -148,7 +148,9 @@ export function AppearancePreview({
   dots = 0,
   front = false,
   admin = false,
+  dotLayout,
 }: {
+  dotLayout?: { x: number; y: number; size: number; spacing: number };
   appearance: Appearance;
   products: Product[];
   dots?: number;
@@ -182,9 +184,25 @@ export function AppearancePreview({
           <ProductArt item={accessory} admin={admin} />
         </div>
       )}
-      <div className="appearance-dots">
+      <div className={dotLayout ? 'appearance-dot-overlay' : 'appearance-dots'}>
         {Array.from({ length: Math.min(8, dots) }, (_, i) => (
-          <span key={i}>{style && <ProductArt item={style} admin={admin} />}</span>
+          <span
+            key={i}
+            style={
+              dotLayout
+                ? {
+                    position: 'absolute',
+                    left: `${((dotLayout.x + ((i % 4) - 1.5) * dotLayout.spacing) / 120) * 100}%`,
+                    top: `${((dotLayout.y + Math.floor(i / 4) * dotLayout.spacing) / 140) * 100}%`,
+                    width: `${(dotLayout.size / 120) * 100}%`,
+                    aspectRatio: '1',
+                    transform: 'translate(-50%,-50%)',
+                  }
+                : undefined
+            }
+          >
+            {style && <ProductArt item={style} admin={admin} />}
+          </span>
         ))}
       </div>
       {frame && (

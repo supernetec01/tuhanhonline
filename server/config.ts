@@ -39,8 +39,30 @@ export const liveSettingsSchema = z
     duckVolume: z.number().min(0).max(1).default(0.2),
   })
   .strict();
+export const dotLayoutSchema = z
+  .object({
+    x: z.number().min(40).max(80).default(60),
+    y: z.number().min(8).max(38).default(26),
+    size: z.number().min(3).max(12).default(7.8),
+    spacing: z.number().min(4).max(14).default(7.8),
+  })
+  .strict();
+export const decorationSchema = z
+  .object({
+    fruit: z.boolean().default(true),
+    cakes: z.boolean().default(true),
+    lotus: z.boolean().default(true),
+    censer: z.boolean().default(true),
+    donationBox: z.boolean().default(true),
+    offsetX: z.number().min(-4).max(4).default(0),
+    offsetY: z.number().min(-3).max(3).default(0),
+    scale: z.number().min(0.7).max(1.3).default(1),
+  })
+  .strict();
 export const settingsSchema = z
   .object({
+    dotLayout: dotLayoutSchema.default(() => dotLayoutSchema.parse({})),
+    decorations: decorationSchema.default(() => decorationSchema.parse({})),
     npc: npcSchema,
     store: storeSchema,
     live: liveSettingsSchema.default(() => liveSettingsSchema.parse({})),
@@ -152,6 +174,8 @@ export const settingsSchema = z
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
 export const defaultSettings: Settings = {
+  dotLayout: dotLayoutSchema.parse({}),
+  decorations: decorationSchema.parse({}),
   npc: npcSchema.parse({}),
   store: storeSchema.parse({}),
   live: liveSettingsSchema.parse({}),

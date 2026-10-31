@@ -160,6 +160,11 @@ try {
       page.evaluate(() => (window as any).__audioProbe.sources.filter((s: any) => s.loop).length),
     )
     .toBe(1);
+  const opening = await page.evaluate(() => (window as any).__audioProbe.sources);
+  const welcome = opening.find((s: any) => !s.loop),
+    ambient = opening.find((s: any) => s.loop);
+  expect(welcome).toBeTruthy();
+  expect(ambient.time).toBeGreaterThanOrEqual(welcome.time + welcome.duration - 0.01);
   expect(audioRequests.some((url) => url.includes(fixtureAudio.background))).toBe(true);
   expect(audioRequests.some((url) => url.includes(fixtureAudio.waitingBackground))).toBe(false);
   const initialLoops = await page.evaluate(

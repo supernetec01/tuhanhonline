@@ -1,3 +1,4 @@
+import { AltarDecorations } from './AltarDecorations';
 import { TempleAudioManager } from './AudioManager';
 import { AudioControls } from './AudioControls';
 import { Experience } from './Experience';
@@ -58,10 +59,7 @@ export function Broadcast() {
         if (!job) return;
         if (!mounted) return;
         setCaption(job.text);
-        manager.setSpeaking(true);
         controller = new AbortController();
-        await manager.effect('blessing', job.id, true);
-        if (!mounted) return;
         setError('');
         const interrupted = new Promise<void>((resolve) => {
           cancelPlayback = resolve;
@@ -82,6 +80,11 @@ export function Broadcast() {
             })
             .catch(() => {});
         }, 1000);
+        if (job.mode === 'openai' || job.mode === 'static' || deviceVoice) {
+          manager.setSpeaking(true);
+          await manager.effect('blessing', job.id, true, controller.signal);
+          if (!mounted || controller.signal.aborted) return;
+        }
         if (job.mode === 'openai' || job.mode === 'static') {
           const response = await fetch(`/api/broadcast/audio/${job.id}`, {
             headers: { 'X-Broadcast-Token': token },
@@ -114,7 +117,7 @@ export function Broadcast() {
         } else
           await Promise.race([interrupted, new Promise((resolve) => setTimeout(resolve, 5000))]);
       } catch (e) {
-        if (mounted) setError((e as Error).message);
+        if (mounted && !controller?.signal.aborted) setError((e as Error).message);
       } finally {
         manager.setSpeaking(false);
         if (watchdog) clearInterval(watchdog);
@@ -158,6 +161,7 @@ export function Broadcast() {
             readOnly
             onNpcCount={setNpcCount}
           />
+          {room && <AltarDecorations config={room.config.decorations} portraitMode />}
           <Experience room={room} />
         </div>
         <div className="broadcast-caption">

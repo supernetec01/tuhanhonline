@@ -34,7 +34,7 @@ Ngày: 31/10/2026. Đối chiếu hai tài liệu đính kèm với source `main
 
 ## Giới hạn cần giữ rõ
 
-Phút thưởng hiện là phút trọn trong mỗi lượt ghế, phần lẻ không mang sang lượt ghế khác. Không hồi tố giờ tu trước migration. Ledger mở đầu bảo toàn số dư hiện có; lịch sử trước V8 vẫn ở bảng purchases. Snapshot Tri Ân hiện thống kê quà, ghi rõ provider/mock, không có tỷ giá Coins nếu nguồn không cung cấp.
+Cập nhật `012_reward_progress.sql`: phần phút hợp lệ được giữ qua các lượt cùng ngày, chốt theo ngày Việt Nam; xem [bản hoàn thiện](ECONOMY_AUDIO_FOLLOWUP.md). Không hồi tố giờ tu trước migration. Ledger mở đầu bảo toàn số dư hiện có; lịch sử trước V8 vẫn ở bảng purchases. Snapshot Tri Ân hiện thống kê quà, ghi rõ provider/mock, không có tỷ giá Coins nếu nguồn không cung cấp.
 
 Bộ lọc chat là baseline theo quy tắc và moderation thủ công, không bảo đảm phát hiện mọi biến thể ngôn ngữ. Chưa có room private `user:{id}` hoặc phân tách room waitlist; chưa triển khai moderation model/ban tự động. Moderator chỉ có endpoint moderation riêng; Operator giữ quyền LIVE. Kiểm thử không thay thế kiểm toán trước public.
 

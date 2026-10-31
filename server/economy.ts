@@ -1,40 +1,88 @@
 import { type Pool } from 'pg';
 import { ApiError, roomLock, changed, getSettings, transaction, type Tx } from './db.js';
 import { type Settings } from './config.js';
-export async function accrueCoins(tx: Tx, config: Settings) {
+const DAY = 86400000,
+  OFFSET = 7 * 3600000;
+const rewardDay = (at: number) => new Date(at + OFFSET).toISOString().slice(0, 10);
+// Caller holds roomLock. Always settle the previous lease before extending or ending it.
+export async function accrueCoins(tx: Tx, config: Settings, force = false) {
   const entries = (
-    await tx.query(
-      `SELECT id,user_id,reward_cursor,LEAST(expires_at,disconnect_deadline,clock_timestamp()) AS until FROM room_entries WHERE status='ACTIVE' ORDER BY user_id`,
-    )
+    await tx.query(`SELECT e.id,e.user_id,e.reward_cursor,
+    LEAST(e.expires_at,e.disconnect_deadline,clock_timestamp()) AS until,
+    (e.expires_at<=clock_timestamp() OR e.disconnect_deadline<=clock_timestamp()) AS closing,
+    coalesce(p.remainder_ms,0) AS remainder_ms
+    FROM room_entries e JOIN users u ON u.id=e.user_id
+    LEFT JOIN coin_progress p ON p.user_id=e.user_id AND p.day=(e.reward_cursor AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+    WHERE e.status='ACTIVE' AND NOT u.banned ORDER BY e.user_id`)
   ).rows;
   let dirty = false;
   for (const e of entries) {
-    const minutes = Math.floor(
-      (new Date(e.until).getTime() - new Date(e.reward_cursor).getTime()) / 60000,
-    );
-    if (minutes < 1) continue;
+    let cursor = new Date(e.reward_cursor).getTime();
+    const until = new Date(e.until).getTime();
+    if (until <= cursor) continue;
+    if (
+      !force &&
+      !e.closing &&
+      rewardDay(cursor) === rewardDay(until) &&
+      until - cursor + e.remainder_ms < 60000
+    )
+      continue;
     await tx.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [e.user_id]);
-    for (let n = 1; n <= minutes; n++) {
-      const at = new Date(new Date(e.reward_cursor).getTime() + n * 60000);
+    let cultivated = 0;
+    while (cursor < until) {
+      const day = rewardDay(cursor),
+        end = Math.min(until, (Math.floor((cursor + OFFSET) / DAY) + 1) * DAY - OFFSET);
+      await tx.query(
+        'INSERT INTO coin_progress(user_id,day) VALUES($1,$2) ON CONFLICT DO NOTHING',
+        [e.user_id, day],
+      );
+      const progress = (
+        await tx.query(
+          'SELECT remainder_ms FROM coin_progress WHERE user_id=$1 AND day=$2 FOR UPDATE',
+          [e.user_id, day],
+        )
+      ).rows[0];
+      const total = progress.remainder_ms + end - cursor,
+        minutes = Math.floor(total / 60000);
       const count = (
         await tx.query(
-          `SELECT count(*)::int AS n FROM coin_ledger WHERE user_id=$1 AND source LIKE 'minute:%' AND (created_at AT TIME ZONE 'Asia/Bangkok')::date=($2::timestamptz AT TIME ZONE 'Asia/Bangkok')::date`,
-          [e.user_id, at],
+          `SELECT coalesce(sum(amount),0)::int AS n FROM coin_ledger WHERE user_id=$1 AND source LIKE 'minute:%' AND (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date=$2::date`,
+          [e.user_id, day],
         )
       ).rows[0].n;
-      if (count >= config.dailyCoinCap) continue;
-      const added = await tx.query(
-        'INSERT INTO coin_ledger(user_id,amount,source,created_at) VALUES($1,1,$2,$3) ON CONFLICT(source) DO NOTHING RETURNING id',
-        [e.user_id, `minute:${e.id}:${at.toISOString()}`, at],
-      );
-      if (added.rowCount) {
-        await tx.query('UPDATE users SET coins=coins+1 WHERE id=$1', [e.user_id]);
-        dirty = true;
+      const award = Math.min(minutes, Math.max(0, config.dailyCoinCap - count));
+      if (award) {
+        const result = await tx.query(
+          `INSERT INTO coin_ledger(user_id,amount,source,created_at)
+          SELECT $1,1,'minute:'||$2||':'||n::text,$3::timestamptz+(n*60000-$4)*interval '1 millisecond'-interval '1 millisecond'
+          FROM generate_series(1,$5::int) n ON CONFLICT(source) DO NOTHING RETURNING id`,
+          [
+            e.user_id,
+            `${e.id}:${new Date(cursor).toISOString()}`,
+            new Date(cursor),
+            progress.remainder_ms,
+            award,
+          ],
+        );
+        if (result.rowCount) {
+          await tx.query('UPDATE users SET coins=coins+$2 WHERE id=$1', [
+            e.user_id,
+            result.rowCount,
+          ]);
+          dirty = true;
+        }
       }
+      cultivated += minutes;
+      await tx.query('UPDATE coin_progress SET remainder_ms=$3 WHERE user_id=$1 AND day=$2', [
+        e.user_id,
+        day,
+        total % 60000,
+      ]);
+      cursor = end;
     }
     await tx.query(
-      "UPDATE room_entries SET cultivated_minutes=cultivated_minutes+$2,reward_cursor=reward_cursor+$2*interval '1 minute' WHERE id=$1",
-      [e.id, minutes],
+      'UPDATE room_entries SET cultivated_minutes=cultivated_minutes+$2,reward_cursor=$3 WHERE id=$1',
+      [e.id, cultivated, new Date(until)],
     );
   }
   return dirty;
