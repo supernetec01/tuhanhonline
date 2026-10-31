@@ -39,6 +39,7 @@ export function AltarDecorations({
 
   return (
     <svg
+      xmlns="http://www.w3.org/2000/svg"
       ref={svg}
       style={fit}
       className="altar-decorations"
@@ -89,26 +90,30 @@ export function AltarDecorations({
               ))}
             </g>
           ))}
-        {config.censer && (
-          <g transform="translate(700 405)">
-            <path
-              d="M-28 -9Q-26 16 -16 18H16Q26 16 28 -9Z"
-              fill="#a77f45"
-              stroke="#dfc28b"
-              strokeWidth="2"
-            />
-            <ellipse cy="-9" rx="28" ry="6" fill="#49372a" stroke="#b89458" />
-            <path
-              d="M-18 16L-22 25M18 16L22 25M-7 -10V-43M0 -10V-48M7 -10V-42"
-              stroke="#b08a55"
-              strokeWidth="3"
-            />
-            <g className="altar-smoke" fill="none" stroke="#e5d1ab" opacity=".25" strokeWidth="2">
-              <path d="M0 -49Q-15 -67 0 -81Q15 -100 0 -118" />
-              <path d="M7 -43Q20 -63 9 -80" />
+        {config.censer &&
+          [602, 798].map((x, i) => (
+            <g key={x} transform={`translate(${x} 405)`}>
+              <path
+                d="M-28 -9Q-26 16 -16 18H16Q26 16 28 -9Z"
+                fill="#a77f45"
+                stroke="#dfc28b"
+                strokeWidth="2"
+              />
+              <ellipse cy="-9" rx="28" ry="6" fill="#49372a" stroke="#b89458" />
+              <path
+                d="M-18 16L-22 25M18 16L22 25M-7 -10V-43M0 -10V-48M7 -10V-42"
+                stroke="#b08a55"
+                strokeWidth="3"
+              />
+              <g className="altar-smoke" fill="none" stroke="#e5d1ab" opacity=".25" strokeWidth="2">
+                <path d="M0 -49Q-15 -67 0 -81Q15 -100 0 -118" />
+                <path d="M7 -43Q20 -63 9 -80" />
+              </g>
+              <text textAnchor="middle" y="40" fontSize="10" fill="#d7bd86">
+                Trạm {i === 0 ? 'A' : 'B'}
+              </text>
             </g>
-          </g>
-        )}
+          ))}
         {config.donationBox && (
           <g transform="translate(1065 453)">
             <path

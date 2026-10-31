@@ -1,3 +1,5 @@
+import { arriveMovements, advanceIncense, planMovement } from './movement.js';
+import { navigation } from './navigation.js';
 import { selectNpcSeats } from './npc-config.js';
 import { randomUUID } from 'node:crypto';
 import { type Pool } from 'pg';
@@ -22,10 +24,15 @@ export class RoomService {
   }
   async reconcile(tx: Tx, c: Settings) {
     let dirty = await accrueCoins(tx, c);
+    const arrived = await arriveMovements(tx, c);
+    if (arrived) {
+      dirty = true;
+      dirty = (await accrueCoins(tx, c)) || dirty;
+    }
     dirty = (await completeMerit(tx, c)) || dirty;
     await snapshotRanks(tx);
     const expired = await tx.query(
-      `UPDATE room_entries SET status='EXPIRED',ended_at=clock_timestamp() WHERE (status IN ('ACTIVE','INVITED') AND expires_at<=clock_timestamp()) OR (status='ACTIVE' AND disconnect_deadline<=clock_timestamp()) RETURNING id`,
+      `UPDATE room_entries SET status='EXPIRED',ended_at=clock_timestamp() WHERE (status IN ('ACTIVE','INVITED') AND greatest(expires_at,coalesce(ritual_protected_until,expires_at))<=clock_timestamp()) OR (status='ACTIVE' AND (disconnect_deadline<=clock_timestamp() OR leave_deadline<=clock_timestamp())) RETURNING id`,
     );
     dirty ||= !!expired.rowCount;
     const cancelled = await tx.query(
@@ -39,7 +46,7 @@ export class RoomService {
     const running = (
       await tx.query("SELECT 1 FROM ritual_actions WHERE type='incense' AND status='RUNNING'")
     ).rowCount;
-    if (!running) {
+    if (!c.movement.enabled && !running) {
       const next = (
         await tx.query(
           "SELECT id,duration_ms FROM ritual_actions WHERE type='incense' AND status='QUEUED' ORDER BY sequence LIMIT 1",
@@ -47,12 +54,13 @@ export class RoomService {
       ).rows[0];
       if (next) {
         await tx.query(
-          "UPDATE ritual_actions SET status='RUNNING',started_at=clock_timestamp(),ends_at=clock_timestamp()+duration_ms*interval '1 millisecond' WHERE id=$1",
+          "UPDATE ritual_actions SET station='A',status='RUNNING',started_at=clock_timestamp(),ends_at=clock_timestamp()+duration_ms*interval '1 millisecond' WHERE id=$1",
           [next.id],
         );
         dirty = true;
       }
     }
+    if (c.movement.enabled) dirty = (await advanceIncense(tx, c)) || dirty;
     const open =
       (await tx.query("SELECT status FROM rooms WHERE id='main'")).rows[0].status === 'open';
     if (open)
@@ -97,7 +105,7 @@ export class RoomService {
         .rows[0];
       const entries = (
         await tx.query(
-          `SELECT e.seat_id,e.status,u.id AS player_id,u.name,u.equipped,u.accessory,u.dots,u.cosmetics,a.type AS action,a.started_at,a.ends_at FROM room_entries e JOIN users u ON u.id=e.user_id LEFT JOIN ritual_actions a ON a.entry_id=e.id AND a.status='RUNNING' WHERE e.status IN ('ACTIVE','INVITED')`,
+          `SELECT e.seat_id,e.status,u.id AS player_id,u.name,u.equipped,u.accessory,u.dots,u.cosmetics,u.appearance_type,e.character_state,e.position_node,e.movement_path,e.move_started_at,e.move_ends_at,e.leave_deadline,a.id AS action_id,a.phase,a.queue_slot,a.station,a.type AS action,a.started_at,a.ends_at FROM room_entries e JOIN users u ON u.id=e.user_id LEFT JOIN ritual_actions a ON a.entry_id=e.id AND a.status IN ('RUNNING','QUEUED') WHERE e.status IN ('ACTIVE','INVITED')`,
         )
       ).rows;
       const waiting = (
@@ -138,6 +146,9 @@ export class RoomService {
         nextCeremony,
         ...room,
         configVersion,
+        navigation: config.movement.enabled
+          ? [...navigation(config).nodes.values()].filter((n) => n.walkable)
+          : [],
         config: { ...config, store: { title: config.store.title, products: [] } },
         capacity,
         occupied: entries.length,
@@ -201,6 +212,11 @@ export class RoomService {
             ],
           )
         ).rows[0];
+        if (seat)
+          await tx.query('UPDATE room_entries SET position_node=$2 WHERE id=$1', [
+            entry.id,
+            `seat:${seat}`,
+          ]);
         dirty = true;
       }
       await tx.query('INSERT INTO commands VALUES($1,$2,$3,$4)', [userId, key, 'join', entry.id]);
@@ -229,7 +245,7 @@ export class RoomService {
       const dirty = await this.reconcile(tx, config);
       const entry = (
         await tx.query(
-          "UPDATE room_entries SET status='ACTIVE',reward_cursor=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 minute',disconnect_deadline=clock_timestamp()+$3*interval '1 second' WHERE user_id=$1 AND status='INVITED' RETURNING *",
+          "UPDATE room_entries SET status='ACTIVE',character_state='SEATED',position_node='seat:'||seat_id,reward_cursor=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 minute',disconnect_deadline=clock_timestamp()+$3*interval '1 second' WHERE user_id=$1 AND status='INVITED' RETURNING *",
           [userId, config.sessionMinutes, config.graceSeconds],
         )
       ).rows[0];
@@ -244,7 +260,7 @@ export class RoomService {
       const { config } = await getSettings(tx);
       const minted = await accrueCoins(tx, config, true);
       await tx.query(
-        "UPDATE room_entries SET disconnect_deadline=clock_timestamp()+$2*interval '1 second' WHERE user_id=$1 AND status='ACTIVE' AND expires_at>clock_timestamp() AND disconnect_deadline>clock_timestamp()",
+        "UPDATE room_entries SET disconnect_deadline=clock_timestamp()+$2*interval '1 second' WHERE user_id=$1 AND status='ACTIVE' AND greatest(expires_at,coalesce(ritual_protected_until,expires_at))>clock_timestamp() AND disconnect_deadline>clock_timestamp()",
         [userId, config.graceSeconds],
       );
       if (minted) await changed(tx, 'wallet.updated');
@@ -269,10 +285,16 @@ export class RoomService {
       if (!config.actionsEnabled)
         throw new ApiError(409, 'ACTION_DISABLED', 'Nghi lễ đang tạm dừng.');
       const entry = (
-        await tx.query("SELECT id FROM room_entries WHERE user_id=$1 AND status='ACTIVE'", [userId])
+        await tx.query("SELECT * FROM room_entries WHERE user_id=$1 AND status='ACTIVE'", [userId])
       ).rows[0];
       if (!entry)
         throw new ApiError(403, 'ACTIVE_SEAT_REQUIRED', 'Bạn cần có chỗ ngồi đang hoạt động.');
+      if (config.movement.enabled && entry.character_state !== 'SEATED')
+        throw new ApiError(
+          409,
+          'CHARACTER_BUSY',
+          'Hãy quay lại ghế và ngồi xuống trước khi làm nghi lễ.',
+        );
       if (
         (
           await tx.query(
@@ -287,7 +309,9 @@ export class RoomService {
           ? config.bowCooldown
           : type === 'prostrate'
             ? config.prostrateCooldown
-            : config.incenseCooldown;
+            : config.movement.enabled
+              ? 300
+              : config.incenseCooldown;
       if (
         (
           await tx.query(
@@ -299,10 +323,18 @@ export class RoomService {
         throw new ApiError(429, 'ACTION_COOLDOWN', 'Hãy chờ một chút trước khi thực hiện lại.');
       const queued =
         type === 'incense' &&
-        !!(await tx.query("SELECT 1 FROM ritual_actions WHERE type='incense' AND status='RUNNING'"))
-          .rowCount;
+        (config.movement.enabled ||
+          !!(
+            await tx.query("SELECT 1 FROM ritual_actions WHERE type='incense' AND status='RUNNING'")
+          ).rowCount);
       const duration =
-        type === 'bow' ? 2000 : type === 'prostrate' ? 4000 : config.incenseDuration * 1000;
+        type === 'bow'
+          ? 2000
+          : type === 'prostrate'
+            ? 4000
+            : config.movement.enabled
+              ? 5000
+              : config.incenseDuration * 1000;
       const result = (
         await tx.query(
           `INSERT INTO ritual_actions(id,entry_id,user_id,type,status,duration_ms,cooldown_ms,merit_reward,started_at,ends_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $5='RUNNING' THEN clock_timestamp() END,CASE WHEN $5='RUNNING' THEN clock_timestamp()+$6::integer*interval '1 millisecond' END) RETURNING *`,
@@ -318,9 +350,78 @@ export class RoomService {
           ],
         )
       ).rows[0];
+      if (type === 'incense') {
+        if (config.movement.enabled) {
+          await tx.query(
+            "UPDATE ritual_actions SET phase='PENDING',cooldown_ms=300000,merit_reward=10 WHERE id=$1",
+            [result.id],
+          );
+          await tx.query("UPDATE room_entries SET character_state='INCENSE_PENDING' WHERE id=$1", [
+            entry.id,
+          ]);
+          await advanceIncense(tx, config);
+        } else if (!queued)
+          await tx.query("UPDATE ritual_actions SET station='A' WHERE id=$1", [result.id]);
+      }
       await tx.query('INSERT INTO commands VALUES($1,$2,$3,$4)', [userId, key, type, result.id]);
       await changed(tx);
       return result;
+    });
+  }
+  async move(userId: string, key: string, target?: string) {
+    return transaction(this.pool, async (tx) => {
+      await roomLock(tx);
+      const { config } = await getSettings(tx);
+      if (!config.movement.enabled)
+        throw new ApiError(409, 'MOVEMENT_DISABLED', 'Di chuyển đang tạm tắt.');
+      const dirty = await this.reconcile(tx, config);
+      const old = (
+        await tx.query('SELECT * FROM movement_commands WHERE user_id=$1 AND request_key=$2', [
+          userId,
+          key,
+        ])
+      ).rows[0];
+      const operation = target ?? 'return';
+      if (old) {
+        if (old.operation !== operation)
+          throw new ApiError(409, 'KEY_REUSED', 'Mã yêu cầu đã dùng.');
+        if (dirty) await changed(tx);
+        return (await tx.query('SELECT * FROM room_entries WHERE id=$1', [old.entry_id])).rows[0];
+      }
+      const e = (
+        await tx.query("SELECT * FROM room_entries WHERE user_id=$1 AND status='ACTIVE'", [userId])
+      ).rows[0];
+      if (!e) throw new ApiError(403, 'ACTIVE_SEAT_REQUIRED', 'Bạn cần một ghế đang giữ.');
+      if (
+        e.movement_path ||
+        e.character_state.startsWith('INCENSE') ||
+        (
+          await tx.query(
+            "SELECT 1 FROM ritual_actions WHERE user_id=$1 AND status IN ('RUNNING','QUEUED')",
+            [userId],
+          )
+        ).rowCount
+      )
+        throw new ApiError(409, 'CHARACTER_BUSY', 'Nhân vật đang di chuyển hoặc làm nghi lễ.');
+      if (target && !navigation(config).nodes.get(target)?.walkable)
+        throw new ApiError(400, 'INVALID_DESTINATION', 'Hãy chọn lối đi hợp lệ.');
+      await accrueCoins(tx, config, true);
+      if (target) {
+        await planMovement(tx, config, e, target, 'WALKING_AWAY');
+        await tx.query(
+          "UPDATE room_entries SET leave_deadline=coalesce(leave_deadline,clock_timestamp()+interval '180 seconds') WHERE id=$1",
+          [e.id],
+        );
+      } else if (e.character_state !== 'SEATED')
+        await planMovement(tx, config, e, `seat:${e.seat_id}`, 'RETURNING');
+      await tx.query('INSERT INTO movement_commands VALUES($1,$2,$3,$4)', [
+        userId,
+        key,
+        operation,
+        e.id,
+      ]);
+      await changed(tx, target ? 'character.move.started' : 'character.return.started');
+      return (await tx.query('SELECT * FROM room_entries WHERE id=$1', [e.id])).rows[0];
     });
   }
   async myAction(userId: string): Promise<Row | null> {

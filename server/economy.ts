@@ -1,3 +1,4 @@
+import { effectiveExpiry } from './movement.js';
 import { type Pool } from 'pg';
 import { ApiError, roomLock, changed, getSettings, transaction, type Tx } from './db.js';
 import { type Settings } from './config.js';
@@ -8,12 +9,12 @@ const rewardDay = (at: number) => new Date(at + OFFSET).toISOString().slice(0, 1
 export async function accrueCoins(tx: Tx, config: Settings, force = false) {
   const entries = (
     await tx.query(`SELECT e.id,e.user_id,e.reward_cursor,
-    LEAST(e.expires_at,e.disconnect_deadline,clock_timestamp()) AS until,
+    LEAST((${effectiveExpiry}),e.disconnect_deadline,clock_timestamp()) AS until,
     (e.expires_at<=clock_timestamp() OR e.disconnect_deadline<=clock_timestamp()) AS closing,
     coalesce(p.remainder_ms,0) AS remainder_ms
     FROM room_entries e JOIN users u ON u.id=e.user_id
     LEFT JOIN coin_progress p ON p.user_id=e.user_id AND p.day=(e.reward_cursor AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
-    WHERE e.status='ACTIVE' AND NOT u.banned ORDER BY e.user_id`)
+    WHERE e.status='ACTIVE' AND e.character_state NOT IN ('STANDING','WALKING_AWAY','RETURNING') AND NOT u.banned ORDER BY e.user_id`)
   ).rows;
   let dirty = false;
   for (const e of entries) {
@@ -90,7 +91,7 @@ export async function accrueCoins(tx: Tx, config: Settings, force = false) {
 export async function completeMerit(tx: Tx, _config: Settings) {
   const actions = (
     await tx.query(
-      `UPDATE ritual_actions a SET status='COMPLETED' FROM room_entries e WHERE e.id=a.entry_id AND e.status='ACTIVE' AND a.status='RUNNING' AND a.ends_at<=LEAST(clock_timestamp(),e.expires_at,e.disconnect_deadline) RETURNING a.*`,
+      `UPDATE ritual_actions a SET status='COMPLETED' FROM room_entries e WHERE e.id=a.entry_id AND e.status='ACTIVE' AND a.status='RUNNING' AND a.ends_at<=LEAST(clock_timestamp(),greatest(e.expires_at,coalesce(e.ritual_protected_until,e.expires_at)),e.disconnect_deadline) RETURNING a.*`,
     )
   ).rows;
   for (const a of actions) {

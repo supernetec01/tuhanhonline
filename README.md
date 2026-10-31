@@ -1,3 +1,5 @@
+> V12: [nhân vật nam/nữ, đi lại, giữ ghế 3 phút và hai trạm dâng hương](docs/CHANGELOG_V12.md).
+
 > Cập nhật tiếp trên main V11: [xu/phút lẻ, đồ lễ, bố trí chấm và âm thanh](docs/ECONOMY_AUDIO_FOLLOWUP.md). Bộ ZIP âm thanh gốc vẫn cần được cung cấp để gán/nghe thử.
 
 # Tu Hành Online
@@ -46,7 +48,7 @@ Mở **Bảo Các** trong game: pháp phục, 10 bàn tọa/đài sen, kiểu ch
 ## Những chức năng hiện có
 
 - 36 ghế A1–F6. Một tài khoản chỉ có một trạng thái chờ/được mời/đang ngồi. Lời mời giữ ghế, hạn mặc định 60 giây; phiên 30 phút; mất heartbeat giữ tối đa khoảng 120 giây từ heartbeat cuối. Người đến sau không vượt người chờ trước.
-- Vái/lạy có cooldown ở server; dâng hương tuần tự FIFO, một người một lượt. Worker dựng lại trạng thái từ DB khi khởi động lại, không giữ hàng chờ chỉ trong RAM.
+- Vái/lạy có cooldown ở server; dâng hương FIFO với hai trạm A/B, thắp 5 giây và tự trở về ghế; đi dạo tối đa 180 giây, tạm dừng xu. Worker dựng lại trạng thái từ DB khi khởi động lại, không giữ hàng chờ chỉ trong RAM.
 - Socket.IO là kênh **chỉ đọc** báo thay đổi; client lấy snapshot mới khi reconnect và poll dự phòng. Khách xem không chiếm ghế. Không còn nhân vật giả làm người chơi.
 - Tủ áo có lớp thân/áo/áo khoác/đầu/phụ kiện/tay/bóng; mỗi áo có đường cắt/hoa văn riêng, xem trước/sau. Chuỗi hạt/hoa sen là phụ kiện miễn phí. Áo và phụ kiện đang mặc lưu server, đồng bộ đến người xem.
 - Đăng ký nhận 300 xu ảo một lần, mua/mặc theo quyền sở hữu, transaction và khóa idempotency. Không nạp tiền thật; không ảnh hưởng ghế/hàng chờ. Catalog và giá quản lý qua CMS V9; giữ nguyên ID và đồ V8 đã sở hữu.
@@ -73,8 +75,9 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
-# Máy chủ pnpm dev đang chạy, MAIL_MODE=file, chỉ localhost:
+# Chromium cục bộ; hai runner tự tạo server/schema riêng:
 pnpm test:browser
+pnpm test:browser:v12
 ```
 
 `test` chạy HTTP thật với PostgreSQL/Redis, tạo schema `test_<uuid>` và prefix Redis riêng, dọn đúng dữ liệu thử; không flush DB Redis chung. Bao gồm 100 yêu cầu join đồng thời và khởi động lại **tiến trình BullMQ worker thật**. Đây không phải benchmark 500–2000 kết nối.

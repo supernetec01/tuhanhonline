@@ -13,7 +13,11 @@ import { TOTP, Secret } from 'otpauth';
 import argon2 from 'argon2';
 import { createApp } from '../server/app.js';
 import { connectDb, migrate } from '../server/db.js';
-import { defaultSettings } from '../server/config.js';
+import { defaultSettings as productionSettings } from '../server/config.js';
+const defaultSettings = {
+  ...productionSettings,
+  movement: { ...productionSettings.movement, enabled: false },
+};
 import { digest, hashOptions } from '../server/auth.js';
 import { MockLiveAdapter } from '../server/live.js';
 import { flushOutbox } from '../server/jobs.js';

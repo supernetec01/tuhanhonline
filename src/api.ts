@@ -32,6 +32,7 @@ export type User = {
   name: string;
   username: string;
   dharmaName: string;
+  appearanceType: 'male' | 'female';
   hasRecoveryEmail: boolean;
   role: 'USER' | 'ADMIN' | 'OPERATOR' | 'MODERATOR';
   verified: boolean;

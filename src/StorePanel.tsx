@@ -160,6 +160,7 @@ export function StorePanel({
         <div className="store-layout">
           <aside>
             <AppearancePreview
+              appearanceType={user?.appearanceType}
               dotLayout={dotLayout}
               appearance={appearance}
               products={catalog.products}

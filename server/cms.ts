@@ -101,6 +101,19 @@ export class CmsService {
         )
           throw new ApiError(400, 'IMAGE_MISSING', 'Ảnh vật phẩm không tồn tại.');
       await accrueCoins(tx, previous.config, true);
+      if (
+        JSON.stringify(config.movement) !== JSON.stringify(previous.config.movement) &&
+        (
+          await tx.query(
+            "SELECT 1 FROM room_entries WHERE status='ACTIVE' AND character_state<>'SEATED' LIMIT 1",
+          )
+        ).rowCount
+      )
+        throw new ApiError(
+          409,
+          'MOVEMENT_BUSY',
+          'Chờ người đi dạo và nghi thức trở về ghế trước khi đổi cấu hình di chuyển.',
+        );
       const changesSeats =
         config.capacity !== previous.config.capacity ||
         JSON.stringify(config.seatLayout) !==

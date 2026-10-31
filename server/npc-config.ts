@@ -46,7 +46,7 @@ export function standardSeatLayout(count: 36 | 72): SeatLayout[] {
         ([18, 29, 40, 60, 71, 82][i % 6] - 50) *
           (count === 36 ? 0.65 + row * 0.08 : 0.65 + row * 0.035),
       y: 52.7 + row * (count === 36 ? 7.5 : 3.4),
-      scale: count === 36 ? 5.7 + row * 1.02 : 3.2 + row * 0.22,
+      scale: count === 36 ? 4.2 + row * 0.35 : 2.6 + row * 0.06,
       enabled: true,
     };
   });

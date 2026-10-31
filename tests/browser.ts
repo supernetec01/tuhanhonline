@@ -255,7 +255,7 @@ try {
   await page.getByRole('button', { name: 'Tủ đồ', exact: true }).click();
   await page.getByRole('button', { name: /Nắng ban mai/ }).click();
   await page.getByRole('button', { name: 'Chuỗi hạt', exact: true }).click();
-  await expect(page.locator('.robe-preview [data-layer]')).toHaveCount(7);
+  await expect(page.locator('.robe-preview [data-layer]')).toHaveCount(10);
   await expect(page.locator('.robe-preview [data-layer="accessory"] circle')).toHaveCount(11);
   await page.getByRole('button', { name: 'Mặt sau', exact: true }).click();
   await expect(page.locator('.robe-preview [data-layer="hands"] path')).toHaveCount(0);

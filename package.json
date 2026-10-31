@@ -20,7 +20,8 @@
     "db:import-legacy": "node --env-file-if-exists=.env --import tsx scripts/import-legacy.ts",
     "admin:promote": "node --env-file-if-exists=.env --import tsx scripts/promote-admin.ts",
     "worker": "node --env-file-if-exists=.env --import tsx server/worker.ts",
-    "format": "prettier --write src server tests scripts docs README.md index.html package.json tsconfig.json vite.config.ts pnpm-workspace.yaml compose.yaml .prettierrc.json"
+    "format": "prettier --write src server tests scripts docs README.md index.html package.json tsconfig.json vite.config.ts pnpm-workspace.yaml compose.yaml .prettierrc.json",
+    "test:browser:v12": "node --env-file-if-exists=.env --import tsx scripts/browser-runner.ts --v12"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "5.2.8",

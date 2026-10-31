@@ -1,4 +1,3 @@
-import { AltarDecorations } from './AltarDecorations';
 import { TempleAudioManager } from './AudioManager';
 import { AudioControls } from './AudioControls';
 import { Experience } from './Experience';
@@ -161,7 +160,6 @@ export function Broadcast() {
             readOnly
             onNpcCount={setNpcCount}
           />
-          {room && <AltarDecorations config={room.config.decorations} portraitMode />}
           <Experience room={room} />
         </div>
         <div className="broadcast-caption">

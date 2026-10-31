@@ -1,3 +1,15 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AltarDecorations } from './AltarDecorations';
+import { PhaserRig } from './phaserRig';
+import { buildRigAtlas } from './rigAtlas';
+import {
+  sampleMotion,
+  queuePoint,
+  distance,
+  type Motion,
+  type NavNode,
+} from '../server/navigation';
+import { type RigAction, type Facing } from './CharacterRig';
 import { useEffect, useRef, useState } from 'react';
 import { VirtualNpcState, npcPoses } from './virtualNpcs';
 import { npcTextureProducts, npcRobe } from './npcArt';
@@ -18,6 +30,12 @@ export function TempleGame({
   onNpcCount,
   portraitMode,
   readOnly = false,
+  zoom = 1,
+  focusSeat,
+  showNames = false,
+  movingMode = false,
+  onMove,
+  onInspect,
 }: {
   room: RoomSnapshot | null;
   outfits: Outfit[];
@@ -30,10 +48,46 @@ export function TempleGame({
   onNpcCount?: (count: number) => void;
   portraitMode?: boolean;
   readOnly?: boolean;
+  zoom?: number;
+  focusSeat?: number;
+  showNames?: boolean;
+  movingMode?: boolean;
+  onMove?: (node: string) => void;
+  onInspect?: (seat: number) => void;
 }) {
   const host = useRef<HTMLDivElement>(null),
-    state = useRef({ room, outfits, userId, onSeat, quiet, preview, onNpcCount, readOnly });
-  state.current = { room, outfits, userId, onSeat, quiet, preview, onNpcCount, readOnly };
+    state = useRef({
+      room,
+      outfits,
+      userId,
+      onSeat,
+      quiet,
+      preview,
+      onNpcCount,
+      readOnly,
+      zoom,
+      focusSeat,
+      showNames,
+      movingMode,
+      onMove,
+      onInspect,
+    });
+  state.current = {
+    room,
+    outfits,
+    userId,
+    onSeat,
+    quiet,
+    preview,
+    onNpcCount,
+    readOnly,
+    zoom,
+    focusSeat,
+    showNames,
+    movingMode,
+    onMove,
+    onInspect,
+  };
   const [portrait, setPortrait] = useState(
     () => portraitMode ?? matchMedia('(max-width:650px)').matches,
   );
@@ -77,8 +131,9 @@ export function TempleGame({
     void Promise.all([
       import('phaser'),
       buildStoreAtlas([...products, ...extras, ...npcTextureProducts]),
+      buildRigAtlas([...products, ...npcTextureProducts]),
     ])
-      .then(([{ default: P }, atlas]) => {
+      .then(([{ default: P }, atlas, rigAtlas]) => {
         if (disposed || !host.current) return;
         class Sanctuary extends P.Scene {
           private virtual = new VirtualNpcState();
@@ -99,7 +154,10 @@ export function TempleGame({
             }
           >();
           private reportedNpcCount = -1;
-          private players = new Map<number, import('phaser').GameObjects.Image>();
+          private lastStats = 0;
+          private players = new Map<number, PhaserRig>();
+          private focused = 0;
+          private cameraZoom = 1;
           private dots = new Map<number, import('phaser').GameObjects.Container>();
           private layers = new Map<
             number,
@@ -114,6 +172,21 @@ export function TempleGame({
           private floor?: import('phaser').GameObjects.Container;
           private layout = '';
           preload() {
+            const altarSvg = renderToStaticMarkup(
+              <AltarDecorations
+                config={state.current.room!.config.decorations}
+                portraitMode={false}
+              />,
+            );
+            const encoded = btoa(
+              Array.from(new TextEncoder().encode(altarSvg), (byte) =>
+                String.fromCharCode(byte),
+              ).join(''),
+            );
+            this.load.svg('altar', 'data:image/svg+xml;base64,' + encoded, {
+              width: 1400,
+              height: 1000,
+            });
             this.load.svg('sanctuary', portrait ? '/sanctuary-portrait.svg' : '/sanctuary.svg', {
               width: W,
               height: H,
@@ -124,7 +197,26 @@ export function TempleGame({
           }
           create() {
             this.textures.addAtlas('store-atlas', atlas.image, atlas.data);
+            this.textures.addAtlas('rig-atlas', rigAtlas.image, rigAtlas.data);
+            host.current?.setAttribute('data-rig-frames', String(rigAtlas.frames));
+            host.current?.setAttribute('data-rig-bytes', String(rigAtlas.bytes));
+            this.cameras.main.setBounds(0, 0, W, H);
+            this.input.on('pointerup', (pointer: import('phaser').Input.Pointer) => {
+              const current = state.current;
+              if (!current.movingMode || !current.onMove) return;
+              const p = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+              const y = portrait ? 52.7 + (((p.y / H) * 100 - 45) / 47) * 37.5 : (p.y / H) * 100;
+              const target = current.room?.navigation
+                ?.map((n: NavNode) => ({ ...n, d: distance(n, { x: (p.x / W) * 100, y }) }))
+                .sort((a: NavNode & { d: number }, b: NavNode & { d: number }) => a.d - b.d)[0];
+              if (target && target.d < 7) current.onMove(target.id);
+            });
             this.add.image(W / 2, H / 2, 'sanctuary').setDisplaySize(W, H);
+            this.add
+              .image(portrait ? -305 : 0, 0, 'altar')
+              .setOrigin(0, 0)
+              .setDisplaySize(portrait ? 1610 : 1400, portrait ? 1150 : 1000)
+              .setDepth(479);
             this.floor = this.add.container(0, 0).setDepth(480);
             if (!disposed) setReady(true);
           }
@@ -132,8 +224,25 @@ export function TempleGame({
             const current = state.current,
               r = current.room;
             if (!r) return;
+            if (this.cameraZoom !== current.zoom) {
+              this.cameraZoom = current.zoom;
+              this.cameras.main.setZoom(current.zoom);
+              if (current.zoom === 1) this.cameras.main.centerOn(W / 2, H / 2);
+            }
             const now = Date.now() + (r.clockOffsetMs ?? 0);
-            const signature = JSON.stringify(
+            if (now - this.lastStats > 1000) {
+              this.lastStats = now;
+              host.current?.setAttribute(
+                'data-fps',
+                String(Math.round(this.game.loop.actualFps * 10) / 10),
+              );
+              host.current?.setAttribute(
+                'data-human-count',
+                String(r.seats.filter((s: any) => !!s.player).length),
+              );
+            }
+            const signature = JSON.stringify([
+              current.movingMode,
               r.seats.map(
                 (s: { id: number; x: number; y: number; scale: number; enabled: boolean }) => ({
                   id: s.id,
@@ -143,7 +252,7 @@ export function TempleGame({
                   enabled: s.enabled,
                 }),
               ),
-            );
+            ]);
             if (signature !== this.layout) {
               this.layout = signature;
               this.floor?.removeAll(true);
@@ -293,6 +402,9 @@ export function TempleGame({
               this.reportedNpcCount = count;
               if (!disposed) current.onNpcCount?.(count);
             }
+            if (current.movingMode && current.focusSeat === undefined) {
+              /* Floor clicks are resolved through the server node list. */
+            }
             const present = new Set<number>();
             for (const seat of r.seats) {
               const original = seat.player;
@@ -307,75 +419,115 @@ export function TempleGame({
               if (!player) continue;
               present.add(seat.id);
               const humanAlpha = this.virtual.humanAlpha(seat.id, visualNow);
-              const texture = player.equipped;
               const cosmetics = { ...baseCosmetics, ...player.cosmetics };
               let sprite = this.players.get(seat.id);
               if (!sprite) {
-                sprite = this.add
-                  .image(
-                    0,
-                    0,
-                    'store-atlas',
-                    this.textures.get('store-atlas').has(texture) ? texture : 'linen',
-                  )
-                  .setOrigin(0.5, 1);
+                sprite = new PhaserRig(this, () => state.current.onInspect?.(seat.id));
                 this.players.set(seat.id, sprite);
               }
-              if (this.textures.get('store-atlas').has(texture) && sprite.frame.name !== texture)
-                sprite.setTexture('store-atlas', texture);
               let x = (seat.x * W) / 100,
-                y = (projectY(seat.y) * H) / 100 - 7,
-                scale = 1,
+                y = (projectY(seat.y) * H) / 100 - 7;
+              const motion: Motion | null =
+                player.movement_path && player.move_started_at
+                  ? {
+                      path: player.movement_path,
+                      startedAt: new Date(player.move_started_at).getTime(),
+                      endsAt: new Date(player.move_ends_at).getTime(),
+                      target: player.movement_path.at(-1)?.id,
+                    }
+                  : null;
+              let facing: Facing = 'back',
+                rigAction: RigAction = 'seated',
+                rigPhase = 0,
                 sy = 1;
+              const stateName = player.character_state ?? 'SEATED';
               const started = new Date(player.started_at).getTime(),
                 ends = new Date(player.ends_at).getTime();
               const active = !!player.action && now < ends;
               const phase = ceremonyPhase(r.ceremony, now);
-              const action = active
-                ? player.action
-                : phase === 'bow'
-                  ? 'bow'
-                  : phase === 'prostrate'
-                    ? 'prostrate'
-                    : 'idle';
-              if (action === 'incense' && !current.quiet) {
-                const t = Math.max(0, Math.min(1, (now - started) / (ends - started)));
-                const baseX = x,
-                  baseY = y;
-                const p = t < 0.5 ? t : 1 - t;
-                if (p < 0.15) x = baseX + ((W / 2 - baseX) * p) / 0.15;
-                else {
-                  x = W / 2;
-                  y = baseY + ((portrait ? 480 : 372) - baseY) * Math.min(1, (p - 0.15) / 0.2);
+              if (motion) {
+                const point = sampleMotion(motion, now);
+                x = (point.x * W) / 100;
+                y = (projectY(point.y) * H) / 100 - 7;
+                facing = point.direction;
+                const elapsed = now - motion.startedAt;
+                const last = motion.path.at(-1)!,
+                  before = motion.path.at(-2)!;
+                if (elapsed < 500 && motion.path[0].id.startsWith('seat:')) {
+                  rigAction = 'standUp';
+                  rigPhase = Math.max(0, elapsed / 500);
+                } else if (
+                  (stateName === 'RETURNING' || stateName === 'INCENSE_RETURNING') &&
+                  elapsed >= before.ms &&
+                  last.id === before.id
+                ) {
+                  rigAction = 'sitDown';
+                  rigPhase = Math.min(1, (elapsed - before.ms) / 500);
+                } else {
+                  rigAction = point.walking
+                    ? 'walk'
+                    : stateName.startsWith('INCENSE')
+                      ? 'holdIncense'
+                      : 'standing';
+                  rigPhase = current.quiet ? 0 : (elapsed % 800) / 800;
                 }
-                scale = 1 - (baseY - y) / (portrait ? 3000 : 1500);
+              } else if (stateName !== 'SEATED' && stateName !== 'INCENSE_PENDING') {
+                const node = player.position_node?.startsWith('queue:')
+                  ? queuePoint(Number(player.position_node.split(':')[1]))
+                  : player.position_node === 'station:A'
+                    ? { x: 43, y: 49.5 }
+                    : player.position_node === 'station:B'
+                      ? { x: 57, y: 49.5 }
+                      : r.navigation.find((n: NavNode) => n.id === player.position_node);
+                if (node) {
+                  x = (node.x * W) / 100;
+                  y = (projectY(node.y) * H) / 100 - 7;
+                }
+                rigAction =
+                  stateName === 'INCENSE_ACTIVE'
+                    ? 'incense'
+                    : stateName.startsWith('INCENSE')
+                      ? 'holdIncense'
+                      : 'standing';
               }
-              if (action === 'bow')
-                sy = current.quiet
-                  ? 0.82
-                  : 0.82 +
-                    0.18 *
-                      Math.cos(
-                        (active ? (now - started) / Math.max(1, ends - started) : 0.5) *
-                          Math.PI *
-                          2,
-                      );
-              if (action === 'prostrate')
-                sy = current.quiet
-                  ? 0.55
-                  : 0.55 +
-                    0.45 *
-                      Math.abs(
-                        Math.cos(
-                          (active ? (now - started) / Math.max(1, ends - started) : 0.5) * Math.PI,
-                        ),
-                      );
-              const width = ((seat.scale * W) / 100) * 1.16 * scale;
-              sprite
-                .setPosition(x, y)
-                .setDisplaySize(width, ((width * 140) / 120) * sy)
-                .setDepth(y)
-                .setAlpha(humanAlpha);
+              if (
+                (stateName === 'SEATED' || stateName === 'INCENSE_PENDING') &&
+                (active || phase === 'bow' || phase === 'prostrate')
+              ) {
+                if (player.action === 'bow' || player.action === 'prostrate')
+                  rigAction = player.action;
+                else if (phase === 'bow' || phase === 'prostrate') rigAction = phase;
+                rigPhase = current.quiet
+                  ? 0.5
+                  : active
+                    ? Math.max(0, Math.min(1, (now - started) / (ends - started)))
+                    : 0.5;
+              }
+
+              const depthScale = Math.max(
+                0.65,
+                Math.min(1.1, 1 + (y - (projectY(seat.y) * H) / 100) / (H * 1.5)),
+              );
+              const width = ((seat.scale * W) / 100) * 1.16 * depthScale;
+              const pose = sprite.draw({
+                x,
+                y,
+                width,
+                alpha: humanAlpha,
+                robe: player.equipped,
+                appearance: player.appearance_type ?? 'male',
+                facing,
+                action: rigAction,
+                phase: rigPhase,
+              });
+              sy = pose.torso.sy;
+              if (current.focusSeat === seat.id) {
+                this.cameras.main.centerOn(x, y - width * 0.5);
+                this.focused = seat.id;
+              } else if (!current.focusSeat && this.focused) {
+                this.focused = 0;
+                this.cameras.main.centerOn(W / 2, H / 2);
+              }
               let layers = this.layers.get(seat.id);
               if (!layers) {
                 layers = {
@@ -418,7 +570,7 @@ export function TempleGame({
                 cosmetics.accessory === 'accessory_none' && player.accessory !== 'none'
                   ? 'legacy_' + player.accessory
                   : cosmetics.accessory;
-              const carried = accessory.includes('beads');
+              const carried = true;
               layerTexture(layers.accessory, accessory, 'accessory_none')
                 .setPosition(
                   carried ? x : (seat.x * W) / 100,
@@ -451,16 +603,29 @@ export function TempleGame({
               dots
                 .setPosition(
                   x + ((dotLayout.x - 60) * width) / 120,
-                  y - ((width * (140 - dotLayout.y)) / 120) * sy,
+                  y - ((138 - pose.head.y + 18 - (dotLayout.y - 26)) * width) / 120,
                 )
                 .setDepth(y + 2)
-                .setAlpha(humanAlpha);
+                .setAlpha(humanAlpha)
+                .setVisible(
+                  current.showNames ||
+                    current.zoom > 1.3 ||
+                    current.focusSeat === seat.id ||
+                    player.player_id === current.userId,
+                );
+              const reveal =
+                current.showNames ||
+                current.focusSeat === seat.id ||
+                player.player_id === current.userId ||
+                (current.zoom >= 2 &&
+                  Math.abs(x - this.cameras.main.midPoint.x) < W * 0.12 &&
+                  Math.abs(y - this.cameras.main.midPoint.y) < H * 0.1);
               let name = this.names.get(seat.id);
               if (!name) {
                 name = this.add
                   .text(0, 0, '', {
                     fontFamily: 'sans-serif',
-                    fontSize: '12px',
+                    fontSize: '10px',
                     color: '#e6c998',
                     backgroundColor: '#261c18cc',
                     padding: { x: 7, y: 4 },
@@ -469,14 +634,21 @@ export function TempleGame({
                 this.names.set(seat.id, name);
               }
               name
-                .setText(player.name + (player.player_id === current.userId ? ' · Bạn' : ''))
-                .setPosition((seat.x * W) / 100, (projectY(seat.y) * H) / 100 + 18)
+                .setText(
+                  (Array.from(player.name as string).length > 13
+                    ? Array.from(player.name as string)
+                        .slice(0, 12)
+                        .join('') + '…'
+                    : player.name) + (player.player_id === current.userId ? ' · Bạn' : ''),
+                )
+                .setScale(1 / current.zoom)
+                .setPosition(x, y + 12)
                 .setDepth(950)
-                .setVisible(r.config.live.showNames || player.player_id === current.userId)
+                .setVisible(reveal)
                 .setAlpha(humanAlpha);
               layerTexture(layers.frame, cosmetics.nameFrame, 'frame_none')
-                .setPosition(name.x, name.y + name.height / 2)
-                .setDisplaySize(name.width + 8, name.height + 4)
+                .setPosition(name.x, name.y + name.height / (2 * current.zoom))
+                .setDisplaySize((name.width + 8) / current.zoom, (name.height + 4) / current.zoom)
                 .setDepth(949)
                 .setVisible(name.visible)
                 .setAlpha(humanAlpha);
@@ -510,14 +682,15 @@ export function TempleGame({
           banner: false,
         });
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error('TempleGame initialization failed', error);
         if (!disposed) setError('Chưa tải được bộ máy game. Hãy tải lại trang.');
       });
     return () => {
       disposed = true;
       game?.destroy(true);
     };
-  }, [outfits.length > 0, portrait, eco, atlasSignature]);
+  }, [outfits.length > 0, portrait, eco, atlasSignature, JSON.stringify(room?.config.decorations)]);
   return (
     <>
       <div
@@ -532,7 +705,19 @@ export function TempleGame({
         </p>
       )}
       {!ready && !error && <div className="game-loading">Đang mở cửa chánh điện…</div>}
-      {!readOnly && (
+      {!readOnly && movingMode && zoom === 1 && (
+        <div className="walkway-targets">
+          {room?.navigation.map((node: NavNode) => (
+            <button
+              key={node.id}
+              aria-label={`Đi tới ${node.id}`}
+              style={{ left: `${node.x}%`, top: `${projectY(node.y)}%` }}
+              onClick={() => onMove?.(node.id)}
+            />
+          ))}
+        </div>
+      )}
+      {!readOnly && zoom === 1 && (
         <div className="accessible-seats" aria-label="Chọn đệm ngồi">
           {room?.seats.map(
             (seat: {

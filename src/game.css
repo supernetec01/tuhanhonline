@@ -1252,3 +1252,120 @@ body:has(.single-game) {
   gap: 8px;
   margin: 12px 0;
 }
+.rig-no-shadow [data-layer='shadow'] {
+  visibility: hidden;
+}
+.camera-tools {
+  position: absolute;
+  right: 2%;
+  top: 2%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #211916dd;
+  border: 1px solid #a78b5b66;
+  border-radius: 6px;
+  padding: 5px;
+  z-index: 35;
+  font-size: 10px;
+}
+.camera-tools button {
+  padding: 5px;
+  color: #dec69a;
+}
+.movement-hint {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  bottom: 5%;
+  background: #30251de8;
+  padding: 9px;
+  text-align: center;
+  border: 1px solid #a58d57;
+  border-radius: 8px;
+  font-size: 10px;
+  pointer-events: none;
+}
+.walkway-targets {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 34;
+}
+.walkway-targets button {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid #e5cc91;
+  background: #caab5880;
+  pointer-events: auto;
+  box-shadow: 0 0 8px #e6cd7666;
+}
+.movement-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  flex-wrap: wrap;
+  max-width: 180px;
+}
+.movement-controls button {
+  padding: 7px;
+  border: 1px solid #a78b5b66;
+  border-radius: 5px;
+}
+.movement-controls small {
+  width: 100%;
+  color: #ad9877;
+  font-size: 8px;
+}
+.single-game select {
+  background: #211b19;
+  color: #d6c19b;
+  border: 1px solid #a3814955;
+  border-radius: 6px;
+  padding: 10px;
+}
+@media (max-width: 650px) {
+  .camera-tools {
+    top: 1%;
+    right: 2%;
+    font-size: 8px;
+    gap: 1px;
+    padding: 2px;
+  }
+  .camera-tools button {
+    padding: 4px;
+    font-size: 8px;
+  }
+  .single-game footer.game-dock {
+    height: 165px;
+    padding: 8px;
+  }
+  .movement-controls {
+    order: 2;
+    max-width: none;
+    width: 100%;
+    justify-content: center;
+  }
+  .movement-controls small {
+    width: auto;
+  }
+  .game-world {
+    width: min(100%, calc((100dvh - 310px) * 0.625));
+  }
+  .movement-hint {
+    font-size: 8px;
+    bottom: 1%;
+  }
+  .world-motto {
+    display: none;
+  }
+}
+.game-dialog label > select {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+}

@@ -1,5 +1,7 @@
 > **Cập nhật:** Hợp đồng đăng ký/đăng nhập username, email tùy chọn, proof-of-work và chọn ghế nằm ở [SINGLE_GAME.md](SINGLE_GAME.md). Chơi game/Admin không bị chặn bởi xác minh email.
 
+> V12 bổ sung `/character/appearance`, `/character/move`, `/character/return` và đường đi trong snapshot; xem [hợp đồng và trạng thái V12](CHANGELOG_V12.md).
+
 # API thực thi hiện tại
 
 Cùng origin, prefix `/api`; JSON, `Cache-Control: no-store`, `X-Request-Id`. POST của trình duyệt cần `Origin=APP_ORIGIN`, `X-Temple-Request: 1`, `Content-Type: application/json`. Token phiên chỉ ở cookie HttpOnly. Lỗi `{code,error}`; 400 dữ liệu sai, 401 phiên/mật khẩu/chữ ký sai, 403 quyền/xác minh/MFA, 409 xung đột, 429 cooldown/rate limit, 503 dịch vụ chưa sẵn sàng.
@@ -45,4 +47,4 @@ Socket.IO chỉ WebSocket, Origin chính xác. Event `temple.event` có `eventId
 
 Mở rộng LIVE: GET `/api/admin/live/analytics`, POST `/api/admin/ceremonies/test` (ADMIN đã đăng nhập hoặc OPERATOR + MFA; diễn tập giới hạn 3/phút, có audit). Snapshot `/api/room` có `effect`, `ceremony`, `nextCeremony`; `experience.changed` báo đổi trạng thái. Cấu hình `config.live` nằm trong API nháp/xuất bản hiện có: mapping hiệu ứng, giọng, TTS bật/tắt, tên nhân vật, duck volume, lịch bật/tắt và chu kỳ 10–15 phút. Không có endpoint test công khai hoặc việc tự cấp ghế qua sự kiện LIVE.
 
-`room_entries` là bảng canonical duy nhất cho ACTIVE/WAITING/INVITED/hết phiên; partial unique index áp dụng xuyên cả ghế và hàng chờ, tránh lỗi đồng thời ở hai bảng độc lập. INVITED giữ ghế và được tính vào occupancy. Ràng buộc FK/seat range 1..36 và khóa hàng phòng serialize cấp ghế. `commands` lưu idempotency cho join/nghi lễ: replay sau khi đã rời không tạo lượt tham gia mới. Migration SQL có checksum, không sửa migration đã áp dụng.
+`room_entries` là bảng canonical duy nhất cho ACTIVE/WAITING/INVITED/hết phiên; partial unique index áp dụng xuyên cả ghế và hàng chờ, tránh lỗi đồng thời ở hai bảng độc lập. INVITED giữ ghế và được tính vào occupancy. Ràng buộc FK/seat range 1..72 (sức chứa mặc định 36) và khóa hàng phòng serialize cấp ghế. `commands` lưu idempotency cho join/nghi lễ: replay sau khi đã rời không tạo lượt tham gia mới. Migration SQL có checksum, không sửa migration đã áp dụng.

@@ -251,7 +251,17 @@ export function Admin() {
                       type="number"
                       min={min}
                       max={max}
-                      value={config[key]}
+                      disabled={
+                        config.movement.enabled &&
+                        (key === 'incenseCooldown' || key === 'incenseDuration')
+                      }
+                      value={
+                        config.movement.enabled && key === 'incenseCooldown'
+                          ? 300
+                          : config.movement.enabled && key === 'incenseDuration'
+                            ? 5
+                            : config[key]
+                      }
                       onChange={(e) => update(key, Number(e.target.value))}
                     />
                   </label>
@@ -539,6 +549,37 @@ export function Admin() {
                       value={config.dotLayout[key]}
                       onChange={(e) =>
                         update('dotLayout', { ...config.dotLayout, [key]: Number(e.target.value) })
+                      }
+                    />
+                  </label>
+                ))}
+                <label className="check-label">
+                  <input
+                    type="checkbox"
+                    checked={config.movement.enabled}
+                    onChange={(e) =>
+                      update('movement', { ...config.movement, enabled: e.target.checked })
+                    }
+                  />
+                  Di chuyển & hai trạm hương V12
+                </label>
+                {(
+                  [
+                    ['speed', 'Tốc độ đi', 4, 12],
+                    ['physicalQueueLimit', 'Số người được gọi lên hàng hương', 8, 12],
+                    ['ritualProtectionMinutes', 'Bảo vệ nghi thức đã gọi (phút)', 3, 10],
+                  ] as const
+                ).map(([key, label, min, max]) => (
+                  <label key={key}>
+                    {label}
+                    <input
+                      type="number"
+                      min={min}
+                      max={max}
+                      step="1"
+                      value={config.movement[key]}
+                      onChange={(e) =>
+                        update('movement', { ...config.movement, [key]: Number(e.target.value) })
                       }
                     />
                   </label>

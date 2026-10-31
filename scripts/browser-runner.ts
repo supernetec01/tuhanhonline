@@ -13,7 +13,9 @@ const root = connectDb(),
   temp = await mkdtemp(tmpdir() + '/temple-browser-');
 const target = new URL(process.env.DATABASE_URL!);
 target.searchParams.set('options', `-c search_path=${schema}`);
-const port = Number(process.env.BROWSER_TEST_PORT ?? 3010),
+const port = Number(
+    process.env.BROWSER_TEST_PORT ?? (process.argv.includes('--v12') ? 3011 : 3010),
+  ),
   origin = `http://localhost:${port}`;
 const childEnv = {
   ...process.env,
@@ -62,10 +64,18 @@ try {
   }
   if (!ready)
     throw new Error('Isolated browser server did not become ready. ' + serverError.slice(-500));
-  const test = spawn(process.execPath, ['--import', 'tsx', 'tests/browser.ts'], {
-    env: childEnv,
-    stdio: 'inherit',
-  });
+  const test = spawn(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      process.argv.includes('--v12') ? 'tests/browser-v12.ts' : 'tests/browser.ts',
+    ],
+    {
+      env: childEnv,
+      stdio: 'inherit',
+    },
+  );
   const code = await new Promise<number>((resolve) =>
     test.once('exit', (code) => resolve(code ?? 1)),
   );

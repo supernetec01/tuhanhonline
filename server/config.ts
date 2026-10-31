@@ -39,6 +39,14 @@ export const liveSettingsSchema = z
     duckVolume: z.number().min(0).max(1).default(0.2),
   })
   .strict();
+export const movementSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    speed: z.number().min(4).max(12).default(8),
+    physicalQueueLimit: z.number().int().min(8).max(12).default(8),
+    ritualProtectionMinutes: z.number().int().min(3).max(10).default(10),
+  })
+  .strict();
 export const dotLayoutSchema = z
   .object({
     x: z.number().min(40).max(80).default(60),
@@ -61,6 +69,7 @@ export const decorationSchema = z
   .strict();
 export const settingsSchema = z
   .object({
+    movement: movementSchema.default(() => movementSchema.parse({})),
     dotLayout: dotLayoutSchema.default(() => dotLayoutSchema.parse({})),
     decorations: decorationSchema.default(() => decorationSchema.parse({})),
     npc: npcSchema,
@@ -174,6 +183,7 @@ export const settingsSchema = z
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
 export const defaultSettings: Settings = {
+  movement: movementSchema.parse({}),
   dotLayout: dotLayoutSchema.parse({}),
   decorations: decorationSchema.parse({}),
   npc: npcSchema.parse({}),

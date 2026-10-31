@@ -4,7 +4,9 @@ export function ProductArt({
   item,
   front = false,
   admin = false,
+  appearanceType = 'male',
 }: {
+  appearanceType?: 'male' | 'female';
   item: Product;
   front?: boolean;
   admin?: boolean;
@@ -21,6 +23,7 @@ export function ProductArt({
     return (
       <Avatar
         front={front}
+        appearanceType={appearanceType}
         color={item.color}
         accent={item.accent}
         outfitId={item.id}
@@ -149,7 +152,9 @@ export function AppearancePreview({
   front = false,
   admin = false,
   dotLayout,
+  appearanceType = 'male',
 }: {
+  appearanceType?: 'male' | 'female';
   dotLayout?: { x: number; y: number; size: number; spacing: number };
   appearance: Appearance;
   products: Product[];
@@ -176,7 +181,7 @@ export function AppearancePreview({
       )}
       {robe && (
         <div className="appearance-layer appearance-robe">
-          <ProductArt item={robe} front={front} admin={admin} />
+          <ProductArt item={robe} front={front} admin={admin} appearanceType={appearanceType} />
         </div>
       )}
       {accessory && (

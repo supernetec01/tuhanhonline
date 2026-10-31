@@ -46,6 +46,7 @@ export const registration = z
       .max(32)
       .regex(/^[\p{L}\p{N} ._-]+$/u),
     password: passwordSchema,
+    appearanceType: z.enum(['male', 'female']).default('male'),
     email: z.union([emailSchema, z.literal('')]).optional(),
     website: z.literal('').optional(),
     challenge: z.object({ id: z.uuid(), solution: z.number().int().min(0).max(10000000) }).strict(),
@@ -107,6 +108,7 @@ export class AuthService {
       id: u.id,
       name: u.name,
       dharmaName: u.name,
+      appearanceType: u.appearance_type,
       username: u.username,
       hasRecoveryEmail: !!u.email,
       role: u.role,

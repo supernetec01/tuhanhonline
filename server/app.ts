@@ -209,8 +209,15 @@ export async function createApp(
       u = await transaction(pool, async (tx) => {
         const result = (
           await tx.query(
-            'INSERT INTO users(id,email,password_hash,name,username) VALUES($1,$2,$3,$4,$5) RETURNING *',
-            [id, input.email || null, passwordHash, input.dharmaName, input.username],
+            'INSERT INTO users(id,email,password_hash,name,username,appearance_type) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',
+            [
+              id,
+              input.email || null,
+              passwordHash,
+              input.dharmaName,
+              input.username,
+              input.appearanceType,
+            ],
           )
         ).rows[0];
         for (const item of [...starterItems, 'robe_pham'])
@@ -655,6 +662,37 @@ export async function createApp(
       [user(res).id, template],
     );
     res.json({ ok: true });
+  });
+  app.post('/api/character/appearance', auth.requireUser, async (req, res) => {
+    const { appearanceType } = z
+      .object({ appearanceType: z.enum(['male', 'female']) })
+      .strict()
+      .parse(req.body);
+    await transaction(pool, async (tx) => {
+      await roomLock(tx);
+      await tx.query('UPDATE users SET appearance_type=$2 WHERE id=$1', [
+        user(res).id,
+        appearanceType,
+      ]);
+      await changed(tx, 'character.appearance.changed');
+    });
+    res.json({
+      user: await auth.account(
+        (await pool.query('SELECT * FROM users WHERE id=$1', [user(res).id])).rows[0],
+      ),
+    });
+  });
+  app.post('/api/character/move', auth.requireUser, async (req, res) => {
+    await auth.limit(`movement:${user(res).id}`, 30, 60);
+    const i = z
+      .object({ nodeId: z.string().min(1).max(80), requestKey: uuid })
+      .strict()
+      .parse(req.body);
+    res.json({ entry: await room.move(user(res).id, i.requestKey, i.nodeId) });
+  });
+  app.post('/api/character/return', auth.requireUser, async (req, res) => {
+    await auth.limit(`movement:${user(res).id}`, 30, 60);
+    res.json({ entry: await room.move(user(res).id, command.parse(req.body).requestKey) });
   });
   app.get('/api/room', async (_req, res) => res.json(await room.snapshot()));
   app.get('/api/room/me', async (req, res) => {

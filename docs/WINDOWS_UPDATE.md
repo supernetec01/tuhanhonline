@@ -8,7 +8,7 @@
 2. Trong PowerShell, kiểm tra thư mục và trạng thái mã nguồn:
 
 ```powershell
-cd D:\AI\tuhanhonline
+cd "E:\Tu hanh online\tuhanhonline"
 git status
 ```
 
@@ -18,10 +18,10 @@ Nếu có thay đổi mã nguồn của riêng bạn, lưu chúng trước khi p
 
 ```powershell
 git pull --ff-only origin main
-pnpm.cmd install --frozen-lockfile
+corepack.cmd pnpm@11.25.0 install --frozen-lockfile
 docker compose up -d --wait
-pnpm.cmd db:migrate
-pnpm.cmd dev
+corepack.cmd pnpm@11.25.0 db:migrate
+corepack.cmd pnpm@11.25.0 dev
 ```
 
 `--ff-only` dừng nếu lịch sử local đã phân nhánh; không tự ghi đè commit local. Không dùng `git reset --hard`, xóa `.data` hoặc tạo lại DB để xử lý lỗi cập nhật.
@@ -31,8 +31,8 @@ pnpm.cmd dev
 Tài khoản, mật khẩu, xu, tủ đồ và cấu hình đang có nằm trong DB local; cập nhật mã nguồn và chạy migrations không tạo lại các tài khoản đó. Tài khoản ADMIN vào trực tiếp sau khi đăng nhập mật khẩu, không cần Authenticator. Nếu chưa có quyền, đăng ký tài khoản trong game rồi dùng PowerShell thứ hai:
 
 ```powershell
-cd D:\AI\tuhanhonline
-pnpm.cmd admin:promote ten_dang_nhap_cua_ban
+cd "E:\Tu hanh online\tuhanhonline"
+corepack.cmd pnpm@11.25.0 admin:promote ten_dang_nhap_cua_ban
 ```
 
 ## Nếu chưa có bản clone Git
@@ -40,10 +40,10 @@ pnpm.cmd admin:promote ten_dang_nhap_cua_ban
 Nếu `git status` báo `not a git repository`, thư mục hiện tại có thể được giải nén từ ZIP. Giữ nguyên thư mục cũ; clone vào thư mục mới để tránh mất dữ liệu:
 
 ```powershell
-cd D:\AI
+cd "E:\Tu hanh online"
 git clone https://github.com/supernetec01/tuhanhonline.git tuhanhonline-github
 cd .\tuhanhonline-github
-pnpm.cmd install --frozen-lockfile
+corepack.cmd pnpm@11.25.0 install --frozen-lockfile
 ```
 
 Nếu muốn dùng lại dữ liệu cũ, cần dừng server/container của bản cũ và chuyển nguyên `.env` cùng `.data` sang bản mới trước khi khởi động. Không chạy đồng thời hai bản dùng chung cổng hoặc cùng dữ liệu PostgreSQL. Không sao chép thư mục PostgreSQL khi container còn chạy.
@@ -51,15 +51,15 @@ Nếu muốn dùng lại dữ liệu cũ, cần dừng server/container của b�
 Nếu cài mới hoàn toàn, không có dữ liệu cũ cần dùng lại:
 
 ```powershell
-pnpm.cmd setup:local
+corepack.cmd pnpm@11.25.0 setup:local
 docker compose up -d --wait
-pnpm.cmd db:migrate
-pnpm.cmd dev
+corepack.cmd pnpm@11.25.0 db:migrate
+corepack.cmd pnpm@11.25.0 dev
 ```
 
 ## Yêu cầu công cụ
 
 - Node.js 24.13 trở lên trong nhánh 24; pnpm 11.25.0.
 - Git for Windows và Docker Desktop (Linux containers/WSL 2).
-- Dùng `pnpm.cmd` trong PowerShell để tránh lỗi chặn script `.ps1`.
+- Dùng `corepack.cmd pnpm@11.25.0` trong PowerShell để tránh lỗi chặn script `.ps1` và ghim đúng phiên bản. Luôn chạy trong thư mục có `package.json`, không chạy tại `C:\Windows\system32`.
 - Bộ 14 file OGG Thiền Tĩnh V2 gốc chưa được cung cấp; repository có manifest, hướng dẫn và công cụ import. Xem [AUDIO_THIEN_TINH_V2.md](AUDIO_THIEN_TINH_V2.md).

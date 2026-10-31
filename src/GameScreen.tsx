@@ -1,4 +1,3 @@
-import { AltarDecorations } from './AltarDecorations';
 import { TempleAudioManager } from './AudioManager';
 import { AudioControls, useAudioState } from './AudioControls';
 import { StorePanel } from './StorePanel';
@@ -60,6 +59,10 @@ export function GameScreen() {
   const [inspecting, setInspecting] = useState(false);
   const inspectBar = useRef<HTMLDivElement>(null);
   useEffect(() => setInspecting(false), [popup]);
+  const [zoom, setZoom] = useState(1),
+    [focusSeat, setFocusSeat] = useState<number | undefined>(),
+    [showNames, setShowNames] = useState(false),
+    [movingMode, setMovingMode] = useState(false);
   const [npcCount, setNpcCount] = useState(0);
   const [products, setProducts] = useState<Product[]>([]);
   const [preview, setPreview] = useState<Appearance | null>(null);
@@ -245,6 +248,7 @@ export function GameScreen() {
           username: data.get('username'),
           dharmaName: data.get('dharmaName'),
           password: data.get('password'),
+          appearanceType: data.get('appearanceType') ?? 'male',
           email: data.get('email') || undefined,
           website: data.get('website') || '',
           challenge: { id: challenge.id, solution },
@@ -455,11 +459,60 @@ export function GameScreen() {
             userId={user?.id}
             onSeat={(id) => void chooseSeat(id)}
             quiet={quiet}
+            zoom={zoom}
+            focusSeat={focusSeat}
+            showNames={showNames}
+            movingMode={movingMode}
+            onInspect={(id) => {
+              setFocusSeat(id);
+              setZoom(1.8);
+            }}
+            onMove={(nodeId) =>
+              void run(async () => {
+                await api('/character/move', { nodeId, requestKey: crypto.randomUUID() });
+                await temple.refresh();
+              })
+            }
             eco={eco}
             preview={preview}
             products={products}
             onNpcCount={setNpcCount}
           />
+          <div className="camera-tools" aria-label="Điều khiển camera">
+            <button aria-label="Thu nhỏ" onClick={() => setZoom((v) => Math.max(1, v - 0.25))}>
+              −
+            </button>
+            <span>{zoom.toFixed(2)}×</span>
+            <button aria-label="Phóng to" onClick={() => setZoom((v) => Math.min(2.5, v + 0.25))}>
+              +
+            </button>
+            <button
+              onClick={() => {
+                setFocusSeat(entry?.seat_id);
+                setZoom(1.8);
+              }}
+              disabled={!entry?.seat_id}
+            >
+              Theo tôi
+            </button>
+            <button
+              onClick={() => {
+                setFocusSeat(undefined);
+                setZoom(1);
+              }}
+            >
+              Toàn cảnh
+            </button>
+            <button aria-pressed={showNames} onClick={() => setShowNames((v) => !v)}>
+              Hiện tên
+            </button>
+          </div>
+          {movingMode && (
+            <div className="movement-hint" role="status">
+              Chạm điểm sáng ở lối đi để di chuyển. Ghế được giữ tối đa 3 phút; đi dạo không nhận
+              xu.
+            </div>
+          )}
           <div
             className="temple-lighting"
             data-mode={
@@ -479,7 +532,6 @@ export function GameScreen() {
                 : room?.config.lighting
             }
           />
-          {room && <AltarDecorations config={room.config.decorations} />}
           <Experience room={room} />
           <div className="npc-disclosure">
             {room?.status === 'open' ? (room.available ?? 0) : 0} chỗ có thể đăng ký · NPC hệ thống
@@ -543,6 +595,63 @@ export function GameScreen() {
               : 'Chỗ ngồi miễn phí · Trang phục chỉ thay đổi diện mạo'}
           </small>
         </div>
+        {entry?.status === 'ACTIVE' && room?.config.movement.enabled && (
+          <div className="movement-controls">
+            <button
+              aria-pressed={movingMode}
+              disabled={
+                busy ||
+                !!myAction ||
+                !!entry.movement_path ||
+                entry.character_state?.startsWith('INCENSE')
+              }
+              onClick={() => setMovingMode((v) => !v)}
+            >
+              Đi dạo
+            </button>
+            <button
+              disabled={
+                busy ||
+                !!entry.movement_path ||
+                entry.character_state === 'SEATED' ||
+                entry.character_state?.startsWith('INCENSE')
+              }
+              onClick={() =>
+                void run(async () => {
+                  await api('/character/return', { requestKey: crypto.randomUUID() });
+                  setMovingMode(false);
+                  await temple.refresh();
+                })
+              }
+            >
+              Về ghế
+            </button>
+            {entry.leave_deadline && (
+              <small>
+                Giữ ghế:{' '}
+                {Math.max(
+                  0,
+                  Math.ceil(
+                    (new Date(entry.leave_deadline).getTime() - now - (room.clockOffsetMs ?? 0)) /
+                      1000,
+                  ),
+                )}{' '}
+                giây
+              </small>
+            )}
+            {entry.character_state?.startsWith('INCENSE') && (
+              <small>
+                {entry.character_state === 'INCENSE_PENDING'
+                  ? 'Đang ngồi chờ gọi dâng hương'
+                  : entry.character_state === 'INCENSE_ACTIVE'
+                    ? 'Đang thắp hương · 5 giây'
+                    : entry.character_state === 'INCENSE_RETURNING'
+                      ? 'Đang trở về ghế'
+                      : 'Đang đi / xếp hàng dâng hương'}
+              </small>
+            )}
+          </div>
+        )}
         <div className="dock-actions">
           <button onClick={() => setPopup('audio')}>
             <Volume2 size={23} />
@@ -550,7 +659,12 @@ export function GameScreen() {
           </button>
           <button
             disabled={
-              !temple.sitting || !!myAction || busy || !connected || !room?.config.actionsEnabled
+              !temple.sitting ||
+              (entry?.character_state && entry.character_state !== 'SEATED') ||
+              !!myAction ||
+              busy ||
+              !connected ||
+              !room?.config.actionsEnabled
             }
             onClick={() => void ritual('bow')}
           >
@@ -559,7 +673,12 @@ export function GameScreen() {
           </button>
           <button
             disabled={
-              !temple.sitting || !!myAction || busy || !connected || !room?.config.actionsEnabled
+              !temple.sitting ||
+              (entry?.character_state && entry.character_state !== 'SEATED') ||
+              !!myAction ||
+              busy ||
+              !connected ||
+              !room?.config.actionsEnabled
             }
             onClick={() => void ritual('prostrate')}
           >
@@ -568,7 +687,12 @@ export function GameScreen() {
           </button>
           <button
             disabled={
-              !temple.sitting || !!myAction || busy || !connected || !room?.config.actionsEnabled
+              !temple.sitting ||
+              (entry?.character_state && entry.character_state !== 'SEATED') ||
+              !!myAction ||
+              busy ||
+              !connected ||
+              !room?.config.actionsEnabled
             }
             onClick={() => void ritual('incense')}
           >
@@ -687,6 +811,15 @@ export function GameScreen() {
                       />
                     </label>
                   )}
+                  {popup === 'register' && (
+                    <label>
+                      Kiểu nhân vật
+                      <select name="appearanceType" aria-label="Kiểu nhân vật" defaultValue="male">
+                        <option value="male">Nam</option>
+                        <option value="female">Nữ</option>
+                      </select>
+                    </label>
+                  )}
                   <label>
                     Mật khẩu
                     <input
@@ -774,7 +907,15 @@ export function GameScreen() {
                   )
                   .map((s: any) => (
                     <p key={s.id}>
-                      {s.player!.name} · Đệm {s.code}
+                      <button
+                        onClick={() => {
+                          setFocusSeat(s.id);
+                          setZoom(1.8);
+                          setPopup(null);
+                        }}
+                      >
+                        {s.player!.name} · Đệm {s.code} · Xem gần
+                      </button>
                     </p>
                   ))}
                 <button onClick={() => setPopup(null)}>Xem vị trí trên chánh điện</button>
@@ -845,6 +986,7 @@ export function GameScreen() {
                   <Avatar
                     front
                     dots={user.dots}
+                    appearanceType={user.appearanceType}
                     dotLayout={room?.config.dotLayout}
                     outfitId={user.equipped}
                     accessory={user.accessory}
@@ -852,6 +994,24 @@ export function GameScreen() {
                     accent={outfits.find((o) => o.id === user.equipped)?.accent}
                   />
                 </div>
+                <label>
+                  Kiểu nhân vật
+                  <select
+                    aria-label="Kiểu nhân vật"
+                    value={user.appearanceType ?? 'male'}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const appearanceType = e.target.value;
+                      void run(async () => {
+                        setUser((await api('/character/appearance', { appearanceType })).user);
+                        await temple.refresh();
+                      });
+                    }}
+                  >
+                    <option value="male">Nam</option>
+                    <option value="female">Nữ</option>
+                  </select>
+                </label>
                 <h1 id="game-dialog-title">{user.dharmaName}</h1>
                 <p>
                   @{user.username} · {user.coins} xu
@@ -938,6 +1098,7 @@ export function GameScreen() {
                   <div className="robe-preview">
                     <Avatar
                       front={front}
+                      appearanceType={user?.appearanceType}
                       color={robe?.color}
                       accent={robe?.accent}
                       outfitId={robe?.id}
